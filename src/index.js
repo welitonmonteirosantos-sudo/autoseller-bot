@@ -1,4 +1,8 @@
 const { Client, GatewayIntentBits } = require("discord.js");
+const {
+  removeOldest,
+  getHistoryCount,
+} = require("./database/history");
 
 const client = new Client({
   intents: [
@@ -12,26 +16,61 @@ client.once("ready", () => {
   console.log(`AutoSeller online como ${client.user.tag}`);
 });
 
+function isAdmin(member) {
+  if (!member) return false;
+
+  return member.roles.cache.some(
+    (role) =>
+      role.name === "👑 DONO" ||
+      role.name === "🛡️ ADMIN"
+  );
+}
+
 client.on("messageCreate", (message) => {
   if (message.author.bot) return;
 
   if (message.content === "+ping") {
-  message.reply("🏓 Pong!");
-}
-
-if (message.content === "+hs") {
-  const member = message.member;
-
-  const autorizado =
-    member.roles.cache.some((role) => role.name === "👑 DONO") ||
-    member.roles.cache.some((role) => role.name === "🛡️ ADMIN");
-
-  if (!autorizado) {
-    return message.reply("❌ Você não tem permissão para usar este comando.");
+    return message.reply("🏓 Pong!");
   }
 
-  message.reply("✅ Você tem permissão administrativa.");
-}
+  if (message.content.startsWith("+hs")) {
+    if (!isAdmin(message.member)) {
+      return message.reply(
+        "❌ Você não tem permissão para usar este comando."
+      );
+    }
+
+    const args = message.content.trim().split(/\s+/);
+
+    if (args.length !== 2) {
+      return message.reply(
+        "❌ Use o comando assim: `+hs 10`"
+      );
+    }
+
+    const amount = Number(args[1]);
+
+    if (!Number.isInteger(amount) || amount <= 0) {
+      return message.reply(
+        "❌ Informe uma quantidade válida. Exemplo: `+hs 10`"
+      );
+    }
+
+    const before = getHistoryCount();
+    const removed = removeOldest(amount);
+    const after = getHistoryCount();
+
+    return message.reply(
+      `🗑️ **Histórico limpo**\n\n` +
+      `Solicitado: **${amount}**\n` +
+      `Removido: **${removed}**\n` +
+      `Restante: **${after}**`
+    );
+  }
+});
+
+client.on("error", (error) => {
+  console.error("Erro do Discord:", error);
 });
 
 client.login(process.env.DISCORD_TOKEN);
