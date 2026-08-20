@@ -16,8 +16,22 @@ client.on("messageCreate", (message) => {
   if (message.author.bot) return;
 
   if (message.content === "+ping") {
-    message.reply("🏓 Pong!");
+  message.reply("🏓 Pong!");
+}
+
+if (message.content === "+hs") {
+  const member = message.member;
+
+  const autorizado =
+    member.roles.cache.some((role) => role.name === "👑 DONO") ||
+    member.roles.cache.some((role) => role.name === "🛡️ ADMIN");
+
+  if (!autorizado) {
+    return message.reply("❌ Você não tem permissão para usar este comando.");
   }
+
+  message.reply("✅ Você tem permissão administrativa.");
+}
 });
 
 client.login(process.env.DISCORD_TOKEN);
