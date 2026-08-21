@@ -31,17 +31,26 @@ function createProductButtons() {
   );
 }
 
-function createProductSelectionMessage() {
-  const product100 = getProductById("rap_100");
-  const product1000 = getProductById("rap_1000");
+async function createProductSelectionMessage() {
+  const product100 = await getProductById("rap_100");
+  const product1000 = await getProductById("rap_1000");
+
+  if (!product100 || !product1000) {
+    return {
+      content:
+        "❌ Não foi possível carregar os produtos.",
+      components: [],
+      ephemeral: true,
+    };
+  }
 
   const stock100 =
-    product100 && product100.stock > 0
+    product100.active && product100.stock > 0
       ? `🟢 ${product100.stock} disponíveis`
       : "🔴 Sem estoque";
 
   const stock1000 =
-    product1000 && product1000.stock > 0
+    product1000.active && product1000.stock > 0
       ? `🟢 ${product1000.stock} disponíveis`
       : "🔴 Sem estoque";
 
@@ -49,10 +58,14 @@ function createProductSelectionMessage() {
     content:
       "🩸 **Berovenda's — Escolha seu produto**\n\n" +
       `💎 **100 RAP**\n` +
-      `💰 R$ 3,50\n` +
+      `💰 R$ ${product100.price
+        .toFixed(2)
+        .replace(".", ",")}\n` +
       `📦 ${stock100}\n\n` +
       `💎 **1.000 RAP**\n` +
-      `💰 R$ 17,00\n` +
+      `💰 R$ ${product1000.price
+        .toFixed(2)
+        .replace(".", ",")}\n` +
       `📦 ${stock1000}\n\n` +
       "Selecione uma opção abaixo:",
     components: [createProductButtons()],
@@ -60,8 +73,8 @@ function createProductSelectionMessage() {
   };
 }
 
-function openProductQuantity(productId) {
-  const product = getProductById(productId);
+async function openProductQuantity(productId) {
+  const product = await getProductById(productId);
 
   if (!product) {
     return {
@@ -74,6 +87,7 @@ function openProductQuantity(productId) {
     return {
       success: false,
       reason: "PRODUCT_DISABLED",
+      product,
     };
   }
 
@@ -85,7 +99,18 @@ function openProductQuantity(productId) {
     };
   }
 
-  const message = createQuantityMessage(productId, 1);
+  const message = await createQuantityMessage(
+    productId,
+    1
+  );
+
+  if (!message) {
+    return {
+      success: false,
+      reason: "QUANTITY_MESSAGE_ERROR",
+      product,
+    };
+  }
 
   return {
     success: true,
