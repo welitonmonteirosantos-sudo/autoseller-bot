@@ -44,14 +44,21 @@ function createQuantityButtons(productId, selectedQuantity = 1) {
   ];
 }
 
-function createQuantityMessage(productId, selectedQuantity = 1) {
-  const product = getProductById(productId);
+async function createQuantityMessage(productId, selectedQuantity = 1) {
+  const product = await getProductById(productId);
 
   if (!product) {
     return null;
   }
 
-  const total = calculateTotal(productId, selectedQuantity);
+  const total = await calculateTotal(
+    productId,
+    selectedQuantity
+  );
+
+  if (total === null) {
+    return null;
+  }
 
   return {
     content:
