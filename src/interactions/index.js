@@ -1,4 +1,10 @@
 const {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+} = require("discord.js");
+
+const {
   createProductSelectionMessage,
   openProductQuantity,
 } = require("./buy");
@@ -15,6 +21,18 @@ const {
 const {
   handleAdminStockInteraction,
 } = require("./adminStock");
+
+const {
+  joinWaitlist,
+} = require("../database/waitlist");
+
+const {
+  getProductById,
+} = require("../database/products");
+
+const {
+  addHistory,
+} = require("../database/history");
 
 async function handleInteraction(interaction) {
   const customId = interaction.customId;
@@ -33,7 +51,6 @@ async function handleInteraction(interaction) {
     return handleAdminStockInteraction(interaction);
   }
 
-  // Daqui para baixo são botões de compra.
   if (!interaction.isButton()) {
     return;
   }
@@ -43,7 +60,8 @@ async function handleInteraction(interaction) {
   // ==============================
 
   if (customId === "buy_open") {
-    const message = await createProductSelectionMessage();
+    const message =
+      await createProductSelectionMessage();
 
     return interaction.reply(message);
   }
@@ -53,21 +71,40 @@ async function handleInteraction(interaction) {
   // ==============================
 
   if (customId.startsWith("buy_product:")) {
-    const [, productId] = customId.split(":");
+    const [, productId] =
+      customId.split(":");
 
-    const result = await openProductQuantity(productId);
+    const result =
+      await openProductQuantity(productId);
 
     if (!result.success) {
       if (result.reason === "OUT_OF_STOCK") {
+        const waitlistButton =
+          new ButtonBuilder()
+            .setCustomId(
+              `waitlist_join:${productId}`
+            )
+            .setLabel(
+              "Entrar na lista de espera"
+            )
+            .setEmoji("👥")
+            .setStyle(ButtonStyle.Danger);
+
+        const row =
+          new ActionRowBuilder()
+            .addComponents(waitlistButton);
+
         return interaction.update({
           content:
             `🔴 **${result.product.name} está sem estoque.**\n\n` +
-            "A lista de espera será conectada a esse fluxo.",
-          components: [],
+            "Você pode entrar na lista de espera para ser avisado quando houver reposição.",
+          components: [row],
         });
       }
 
-      if (result.reason === "PRODUCT_DISABLED") {
+      if (
+        result.reason === "PRODUCT_DISABLED"
+      ) {
         return interaction.update({
           content:
             `⛔ **${result.product.name} está indisponível no momento.**`,
@@ -82,70 +119,184 @@ async function handleInteraction(interaction) {
       });
     }
 
-    return interaction.update(result.message);
+    return interaction.update(
+      result.message
+    );
+  }
+
+  // ==============================
+  // ENTRAR NA LISTA DE ESPERA
+  // ==============================
+
+  if (
+    customId.startsWith(
+      "waitlist_join:"
+    )
+  ) {
+    const [, productId] =
+      customId.split(":");
+
+    const product =
+      await getProductById(productId);
+
+    if (!product) {
+      return interaction.update({
+        content:
+          "❌ Produto não encontrado.",
+        components: [],
+      });
+    }
+
+    const result =
+      await joinWaitlist(
+        productId,
+        interaction.user
+      );
+
+    if (!result.success) {
+      if (
+        result.reason ===
+        "ALREADY_IN_WAITLIST"
+      ) {
+        return interaction.update({
+          content:
+            `👥 Você já está na lista de espera de **${product.name}**.\n\n` +
+            `Sua posição atual é **#${result.position}**.`,
+          components: [],
+        });
+      }
+
+      if (
+        result.reason ===
+        "WAITLIST_FULL"
+      ) {
+        return interaction.update({
+          content:
+            `🔴 A lista de espera de **${product.name}** está cheia.\n\n` +
+            "Limite: **10 pessoas**.",
+          components: [],
+        });
+      }
+
+      return interaction.update({
+        content:
+          "❌ Não foi possível entrar na lista de espera.",
+        components: [],
+      });
+    }
+
+    await addHistory({
+      type: "WAITLIST_JOIN",
+      userId: interaction.user.id,
+      username:
+        interaction.user.username,
+      productId: product.id,
+      productName: product.name,
+      details: {
+        position: result.position,
+        total: result.total,
+      },
+    });
+
+    return interaction.update({
+      content:
+        `✅ Você entrou na lista de espera de **${product.name}**.\n\n` +
+        `👥 Posição: **#${result.position}**\n` +
+        `📊 Pessoas aguardando: **${result.total}/10**\n\n` +
+        "Você será avisado por **DM** e também no **canal de avisos** quando houver reposição.",
+      components: [],
+    });
   }
 
   // ==============================
   // AUMENTAR QUANTIDADE
   // ==============================
 
-  if (customId.startsWith("qty_increase:")) {
-    const [, productId, currentQuantity] =
-      customId.split(":");
-
-    const newQuantity = changeQuantity(
-      currentQuantity,
-      "increase"
-    );
-
-    const message = await createQuantityMessage(
+  if (
+    customId.startsWith(
+      "qty_increase:"
+    )
+  ) {
+    const [
+      ,
       productId,
-      newQuantity
-    );
+      currentQuantity,
+    ] = customId.split(":");
+
+    const newQuantity =
+      changeQuantity(
+        currentQuantity,
+        "increase"
+      );
+
+    const message =
+      await createQuantityMessage(
+        productId,
+        newQuantity
+      );
 
     if (!message) {
       return interaction.update({
-        content: "❌ Produto não encontrado.",
+        content:
+          "❌ Produto não encontrado.",
         components: [],
       });
     }
 
-    return interaction.update(message);
+    return interaction.update(
+      message
+    );
   }
 
   // ==============================
   // DIMINUIR QUANTIDADE
   // ==============================
 
-  if (customId.startsWith("qty_decrease:")) {
-    const [, productId, currentQuantity] =
-      customId.split(":");
-
-    const newQuantity = changeQuantity(
-      currentQuantity,
-      "decrease"
-    );
-
-    const message = await createQuantityMessage(
+  if (
+    customId.startsWith(
+      "qty_decrease:"
+    )
+  ) {
+    const [
+      ,
       productId,
-      newQuantity
-    );
+      currentQuantity,
+    ] = customId.split(":");
+
+    const newQuantity =
+      changeQuantity(
+        currentQuantity,
+        "decrease"
+      );
+
+    const message =
+      await createQuantityMessage(
+        productId,
+        newQuantity
+      );
 
     if (!message) {
       return interaction.update({
-        content: "❌ Produto não encontrado.",
+        content:
+          "❌ Produto não encontrado.",
         components: [],
       });
     }
 
-    return interaction.update(message);
+    return interaction.update(
+      message
+    );
   }
 
   // ==============================
   // QUANTIDADE ATUAL
   // ==============================
 
-  if (customId.startsWith("qty_current:")) {
+  if (
+    customId.startsWith(
+      "qty_current:"
+    )
+  ) {
     return interaction.deferUpdate();
   }
 
@@ -153,29 +304,64 @@ async function handleInteraction(interaction) {
   // CONFIRMAR COMPRA
   // ==============================
 
-  if (customId.startsWith("qty_confirm:")) {
-    const [, productId, quantity] =
-      customId.split(":");
+  if (
+    customId.startsWith(
+      "qty_confirm:"
+    )
+  ) {
+    const [
+      ,
+      productId,
+      quantity,
+    ] = customId.split(":");
 
     await interaction.deferUpdate();
 
-    const result = await processPurchase({
-      guild: interaction.guild,
-      user: interaction.user,
-      productId,
-      quantity: Number(quantity),
-    });
+    const result =
+      await processPurchase({
+        guild: interaction.guild,
+        user: interaction.user,
+        productId,
+        quantity:
+          Number(quantity),
+      });
 
     if (!result.success) {
-      if (result.reason === "OUT_OF_STOCK") {
+      if (
+        result.reason ===
+        "OUT_OF_STOCK"
+      ) {
+        const waitlistButton =
+          new ButtonBuilder()
+            .setCustomId(
+              `waitlist_join:${productId}`
+            )
+            .setLabel(
+              "Entrar na lista de espera"
+            )
+            .setEmoji("👥")
+            .setStyle(
+              ButtonStyle.Danger
+            );
+
+        const row =
+          new ActionRowBuilder()
+            .addComponents(
+              waitlistButton
+            );
+
         return interaction.editReply({
           content:
-            "🔴 **O produto acabou antes da confirmação.**",
-          components: [],
+            "🔴 **O produto acabou antes da confirmação.**\n\n" +
+            "Você pode entrar na lista de espera.",
+          components: [row],
         });
       }
 
-      if (result.reason === "PRODUCT_DISABLED") {
+      if (
+        result.reason ===
+        "PRODUCT_DISABLED"
+      ) {
         return interaction.editReply({
           content:
             "⛔ **Este produto está indisponível no momento.**",
@@ -183,10 +369,24 @@ async function handleInteraction(interaction) {
         });
       }
 
-      if (result.reason === "INVALID_QUANTITY") {
+      if (
+        result.reason ===
+        "INVALID_QUANTITY"
+      ) {
         return interaction.editReply({
           content:
             "❌ Quantidade inválida. Escolha entre **1 e 10**.",
+          components: [],
+        });
+      }
+
+      if (
+        result.reason ===
+        "TICKET_CREATION_ERROR"
+      ) {
+        return interaction.editReply({
+          content:
+            "❌ Não foi possível criar o ticket da compra.",
           components: [],
         });
       }
