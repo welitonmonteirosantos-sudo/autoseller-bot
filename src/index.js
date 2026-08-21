@@ -1,8 +1,15 @@
 const { Client, GatewayIntentBits } = require("discord.js");
+
 const {
   removeOldest,
   getHistoryCount,
 } = require("./database/history");
+
+const {
+  createProduct,
+  getProducts,
+  getProductByName,
+} = require("./database/products");
 
 const client = new Client({
   intents: [
@@ -14,6 +21,19 @@ const client = new Client({
 
 client.once("ready", () => {
   console.log(`AutoSeller online como ${client.user.tag}`);
+
+  const existingProduct = getProductByName("100 RAP");
+
+  if (!existingProduct) {
+    createProduct({
+      name: "100 RAP",
+      price: 0,
+      stock: 0,
+      active: true,
+    });
+
+    console.log("Produto 100 RAP criado.");
+  }
 });
 
 function isAdmin(member) {
@@ -31,6 +51,38 @@ client.on("messageCreate", (message) => {
 
   if (message.content === "+ping") {
     return message.reply("🏓 Pong!");
+  }
+
+  if (message.content === "+produtos") {
+    if (!isAdmin(message.member)) {
+      return message.reply(
+        "❌ Você não tem permissão para usar este comando."
+      );
+    }
+
+    const products = getProducts();
+
+    if (products.length === 0) {
+      return message.reply("📦 Nenhum produto cadastrado.");
+    }
+
+    const list = products
+      .map((product) => {
+        const status =
+          product.active && product.stock > 0
+            ? "🟢 Disponível"
+            : "🔴 Sem estoque";
+
+        return (
+          `📦 **${product.name}**\n` +
+          `💰 Preço: R$ ${product.price.toFixed(2)}\n` +
+          `📊 Estoque: ${product.stock}\n` +
+          `${status}`
+        );
+      })
+      .join("\n\n");
+
+    return message.reply(list);
   }
 
   if (message.content.startsWith("+hs")) {
@@ -56,7 +108,6 @@ client.on("messageCreate", (message) => {
       );
     }
 
-    const before = getHistoryCount();
     const removed = removeOldest(amount);
     const after = getHistoryCount();
 
