@@ -23,7 +23,7 @@ async function processPurchase({
   productId,
   quantity,
 }) {
-  const product = getProductById(productId);
+  const product = await getProductById(productId);
 
   if (!product) {
     return {
@@ -59,7 +59,7 @@ async function processPurchase({
     };
   }
 
-  const stockResult = removeStock(
+  const stockResult = await removeStock(
     productId,
     requestedQuantity
   );
@@ -70,7 +70,7 @@ async function processPurchase({
 
   const finalQuantity = stockResult.quantity;
 
-  const total = calculateTotal(
+  const total = await calculateTotal(
     productId,
     finalQuantity
   );
@@ -82,10 +82,12 @@ async function processPurchase({
     };
   }
 
+  const updatedProduct = stockResult.product;
+
   const ticket = await createPurchaseTicket({
     guild,
     user,
-    product,
+    product: updatedProduct,
     quantity: finalQuantity,
     total,
   });
@@ -94,14 +96,16 @@ async function processPurchase({
     type: "PURCHASE",
     userId: user.id,
     username: user.username,
-    productId: product.id,
-    productName: product.name,
+    productId: updatedProduct.id,
+    productName: updatedProduct.name,
     quantity: finalQuantity,
     details: {
       requestedQuantity,
       adjusted: finalQuantity !== requestedQuantity,
       total,
       ticketId: ticket.id,
+      oldStock: stockResult.oldStock,
+      newStock: stockResult.newStock,
     },
   });
 
@@ -120,8 +124,8 @@ async function processPurchase({
         type: "WAITLIST_REMOVED",
         userId: user.id,
         username: user.username,
-        productId: product.id,
-        productName: product.name,
+        productId: updatedProduct.id,
+        productName: updatedProduct.name,
         details: {
           reason: "PURCHASE_COMPLETED",
         },
@@ -131,7 +135,7 @@ async function processPurchase({
 
   return {
     success: true,
-    product,
+    product: updatedProduct,
     requestedQuantity,
     quantity: finalQuantity,
     adjusted: finalQuantity !== requestedQuantity,
