@@ -22,7 +22,9 @@ const {
 } = require("../utils/permissions");
 
 function formatStock(product) {
-  if (!product) return "Produto não encontrado";
+  if (!product) {
+    return "Produto não encontrado";
+  }
 
   return (
     `📦 **${product.name}**\n` +
@@ -30,9 +32,13 @@ function formatStock(product) {
   );
 }
 
-function createStockMenu() {
-  const rap100 = getProductById("rap_100");
-  const rap1000 = getProductById("rap_1000");
+async function createStockMenu() {
+  const rap100 = await getProductById("rap_100");
+  const rap1000 = await getProductById("rap_1000");
+
+  if (!rap100 || !rap1000) {
+    throw new Error("Produtos principais não encontrados.");
+  }
 
   const button100 = new ButtonBuilder()
     .setCustomId("admin_stock_product:rap_100")
@@ -62,8 +68,8 @@ function createStockMenu() {
   };
 }
 
-function createStockActionMenu(productId) {
-  const product = getProductById(productId);
+async function createStockActionMenu(productId) {
+  const product = await getProductById(productId);
 
   if (!product) {
     return null;
@@ -95,8 +101,8 @@ function createStockActionMenu(productId) {
   };
 }
 
-function createStockModal(productId, mode) {
-  const product = getProductById(productId);
+async function createStockModal(productId, mode) {
+  const product = await getProductById(productId);
 
   if (!product) {
     return null;
@@ -134,30 +140,20 @@ function createStockModal(productId, mode) {
 
 async function handleAdminStockInteraction(interaction) {
   if (!isAdmin(interaction.member)) {
-    if (interaction.isButton()) {
-      return interaction.reply({
-        content:
-          "❌ Você não tem permissão para usar o painel administrativo.",
-        ephemeral: true,
-      });
-    }
-
-    if (interaction.isModalSubmit()) {
-      return interaction.reply({
-        content:
-          "❌ Você não tem permissão para usar o painel administrativo.",
-        ephemeral: true,
-      });
-    }
-
-    return;
+    return interaction.reply({
+      content:
+        "❌ Você não tem permissão para usar o painel administrativo.",
+      ephemeral: true,
+    });
   }
 
   if (
     interaction.isButton() &&
     interaction.customId === "admin_stock"
   ) {
-    return interaction.reply(createStockMenu());
+    const menu = await createStockMenu();
+
+    return interaction.reply(menu);
   }
 
   if (
@@ -169,7 +165,9 @@ async function handleAdminStockInteraction(interaction) {
     const [, productId] =
       interaction.customId.split(":");
 
-    const menu = createStockActionMenu(productId);
+    const menu = await createStockActionMenu(
+      productId
+    );
 
     if (!menu) {
       return interaction.update({
@@ -190,7 +188,7 @@ async function handleAdminStockInteraction(interaction) {
     const [, productId] =
       interaction.customId.split(":");
 
-    const modal = createStockModal(
+    const modal = await createStockModal(
       productId,
       "add"
     );
@@ -214,7 +212,7 @@ async function handleAdminStockInteraction(interaction) {
     const [, productId] =
       interaction.customId.split(":");
 
-    const modal = createStockModal(
+    const modal = await createStockModal(
       productId,
       "set"
     );
@@ -256,26 +254,26 @@ async function handleAdminStockInteraction(interaction) {
       });
     }
 
-    const product = getProductById(productId);
+    const productBefore = await getProductById(
+      productId
+    );
 
-    if (!product) {
+    if (!productBefore) {
       return interaction.reply({
         content: "❌ Produto não encontrado.",
         ephemeral: true,
       });
     }
 
-    const oldStock = product.stock;
-
     let result;
 
     if (mode === "add") {
-      result = addStock(
+      result = await addStock(
         productId,
         quantity
       );
     } else {
-      result = setStock(
+      result = await setStock(
         productId,
         quantity
       );
@@ -289,6 +287,8 @@ async function handleAdminStockInteraction(interaction) {
       });
     }
 
+    const productAfter = result.product;
+
     addAdminLog({
       adminId: interaction.user.id,
       adminName: interaction.user.username,
@@ -296,10 +296,10 @@ async function handleAdminStockInteraction(interaction) {
         mode === "add"
           ? "ADD_STOCK"
           : "SET_STOCK",
-      productId: product.id,
-      productName: product.name,
-      oldValue: oldStock,
-      newValue: product.stock,
+      productId: productAfter.id,
+      productName: productAfter.name,
+      oldValue: productBefore.stock,
+      newValue: productAfter.stock,
       details: {
         quantity,
       },
@@ -308,9 +308,9 @@ async function handleAdminStockInteraction(interaction) {
     return interaction.reply({
       content:
         `✅ **Estoque atualizado**\n\n` +
-        `📦 Produto: **${product.name}**\n` +
-        `Anterior: **${oldStock}**\n` +
-        `Atual: **${product.stock}**`,
+        `📦 Produto: **${productAfter.name}**\n` +
+        `Anterior: **${productBefore.stock}**\n` +
+        `Atual: **${productAfter.stock}**`,
       ephemeral: true,
     });
   }
