@@ -1,6 +1,22 @@
-const history = [];
+const { pool } = require("./db");
 
-function addHistory({
+function mapHistory(row) {
+  if (!row) return null;
+
+  return {
+    id: Number(row.id),
+    type: row.type,
+    userId: row.user_id,
+    username: row.username,
+    productId: row.product_id,
+    productName: row.product_name,
+    quantity: row.quantity === null ? null : Number(row.quantity),
+    details: row.details,
+    createdAt: row.created_at,
+  };
+}
+
+async function addHistory({
   type,
   userId = null,
   username = null,
@@ -9,70 +25,120 @@ function addHistory({
   quantity = null,
   details = null,
 }) {
-  const entry = {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    type,
-    userId,
-    username,
-    productId,
-    productName,
-    quantity,
-    details,
-    createdAt: new Date().toISOString(),
-  };
+  const result = await pool.query(
+    `
+      INSERT INTO history (
+        type,
+        user_id,
+        username,
+        product_id,
+        product_name,
+        quantity,
+        details
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING *
+    `,
+    [
+      type,
+      userId,
+      username,
+      productId,
+      productName,
+      quantity,
+      details ? JSON.stringify(details) : null,
+    ]
+  );
 
-  history.push(entry);
-
-  return entry;
+  return mapHistory(result.rows[0]);
 }
 
-function getHistory() {
-  // Mais recentes primeiro
-  return [...history].reverse();
+async function getHistory() {
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM history
+      ORDER BY created_at DESC, id DESC
+    `
+  );
+
+  return result.rows.map(mapHistory);
 }
 
-function getHistoryCount() {
-  return history.length;
+async function getHistoryCount() {
+  const result = await pool.query(
+    `
+      SELECT COUNT(*)::int AS total
+      FROM history
+    `
+  );
+
+  return result.rows[0].total;
 }
 
-function removeOldest(amount) {
+async function removeOldest(amount) {
   const quantity = Number(amount);
 
   if (!Number.isInteger(quantity) || quantity <= 0) {
     return 0;
   }
 
-  const totalToRemove = Math.min(
-    quantity,
-    history.length
+  const result = await pool.query(
+    `
+      DELETE FROM history
+      WHERE id IN (
+        SELECT id
+        FROM history
+        ORDER BY created_at ASC, id ASC
+        LIMIT $1
+      )
+      RETURNING id
+    `,
+    [quantity]
   );
 
-  // O array original guarda os mais antigos no início.
-  history.splice(0, totalToRemove);
-
-  return totalToRemove;
+  return result.rowCount;
 }
 
-function filterHistory({
+async function filterHistory({
   type = null,
   userId = null,
   productId = null,
 } = {}) {
-  return getHistory().filter((entry) => {
-    if (type && entry.type !== type) {
-      return false;
-    }
+  const conditions = [];
+  const values = [];
 
-    if (userId && entry.userId !== userId) {
-      return false;
-    }
+  if (type) {
+    values.push(type);
+    conditions.push(`type = $${values.length}`);
+  }
 
-    if (productId && entry.productId !== productId) {
-      return false;
-    }
+  if (userId) {
+    values.push(userId);
+    conditions.push(`user_id = $${values.length}`);
+  }
 
-    return true;
-  });
+  if (productId) {
+    values.push(productId);
+    conditions.push(`product_id = $${values.length}`);
+  }
+
+  const where =
+    conditions.length > 0
+      ? `WHERE ${conditions.join(" AND ")}`
+      : "";
+
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM history
+      ${where}
+      ORDER BY created_at DESC, id DESC
+    `,
+    values
+  );
+
+  return result.rows.map(mapHistory);
 }
 
 module.exports = {
