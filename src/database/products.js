@@ -1,123 +1,249 @@
-const products = [];
+const config = require("../config");
 
-function createProduct(data) {
-  const product = {
-    id: Date.now().toString(),
-    name: data.name,
-    price: Number(data.price),
-    stock: Number(data.stock),
-    active: data.active ?? true,
-    maxPerPurchase: 10,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
+const products = new Map();
 
-  products.push(product);
+function initializeProducts() {
+  for (const productConfig of Object.values(config.products)) {
+    if (!products.has(productConfig.id)) {
+      products.set(productConfig.id, {
+        ...productConfig,
+        stock: 0,
+        active: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  }
 
-  return product;
+  return getProducts();
 }
 
 function getProducts() {
-  return [...products];
+  return Array.from(products.values());
 }
 
 function getProductById(id) {
-  return products.find((product) => product.id === id);
+  return products.get(id) || null;
 }
 
 function getProductByName(name) {
-  return products.find(
-    (product) =>
-      product.name.toLowerCase() === name.toLowerCase()
+  if (!name) return null;
+
+  return (
+    getProducts().find(
+      (product) =>
+        product.name.toLowerCase() === name.toLowerCase()
+    ) || null
   );
 }
 
-function updateProduct(id, changes) {
+function setPrice(id, price) {
   const product = getProductById(id);
+  const newPrice = Number(price);
 
   if (!product) {
-    return null;
+    return {
+      success: false,
+      reason: "PRODUCT_NOT_FOUND",
+    };
   }
 
-  if (changes.name !== undefined) {
-    product.name = changes.name;
+  if (!Number.isFinite(newPrice) || newPrice < 0) {
+    return {
+      success: false,
+      reason: "INVALID_PRICE",
+    };
   }
 
-  if (changes.price !== undefined) {
-    product.price = Number(changes.price);
-  }
+  const oldPrice = product.price;
 
-  if (changes.stock !== undefined) {
-    product.stock = Math.max(0, Number(changes.stock));
-  }
-
-  if (changes.active !== undefined) {
-    product.active = Boolean(changes.active);
-  }
-
+  product.price = newPrice;
   product.updatedAt = new Date().toISOString();
 
-  return product;
+  return {
+    success: true,
+    oldPrice,
+    newPrice,
+    product,
+  };
 }
 
-function decreaseStock(id, quantity) {
+function setStock(id, quantity) {
   const product = getProductById(id);
+  const newStock = Number(quantity);
 
   if (!product) {
-    return null;
+    return {
+      success: false,
+      reason: "PRODUCT_NOT_FOUND",
+    };
   }
 
+  if (!Number.isInteger(newStock) || newStock < 0) {
+    return {
+      success: false,
+      reason: "INVALID_STOCK",
+    };
+  }
+
+  const oldStock = product.stock;
+
+  product.stock = newStock;
+  product.updatedAt = new Date().toISOString();
+
+  return {
+    success: true,
+    oldStock,
+    newStock,
+    product,
+  };
+}
+
+function addStock(id, quantity) {
+  const product = getProductById(id);
   const amount = Number(quantity);
 
+  if (!product) {
+    return {
+      success: false,
+      reason: "PRODUCT_NOT_FOUND",
+    };
+  }
+
   if (!Number.isInteger(amount) || amount <= 0) {
-    return null;
+    return {
+      success: false,
+      reason: "INVALID_QUANTITY",
+    };
+  }
+
+  const oldStock = product.stock;
+
+  product.stock += amount;
+  product.updatedAt = new Date().toISOString();
+
+  return {
+    success: true,
+    added: amount,
+    oldStock,
+    newStock: product.stock,
+    product,
+  };
+}
+
+function removeStock(id, requestedQuantity) {
+  const product = getProductById(id);
+  const requested = Number(requestedQuantity);
+
+  if (!product) {
+    return {
+      success: false,
+      reason: "PRODUCT_NOT_FOUND",
+    };
+  }
+
+  if (!Number.isInteger(requested) || requested <= 0) {
+    return {
+      success: false,
+      reason: "INVALID_QUANTITY",
+    };
   }
 
   if (product.stock <= 0) {
     return {
       success: false,
       reason: "OUT_OF_STOCK",
+      available: 0,
       product,
     };
   }
 
-  const actualQuantity = Math.min(amount, product.stock);
+  // Regra que definimos:
+  // se pedir mais que o estoque, vende somente o disponível.
+  const quantity = Math.min(
+    requested,
+    product.stock,
+    config.purchase.maxQuantity
+  );
 
-  product.stock -= actualQuantity;
+  const oldStock = product.stock;
+
+  product.stock -= quantity;
   product.updatedAt = new Date().toISOString();
 
   return {
     success: true,
-    quantity: actualQuantity,
+    requested,
+    quantity,
+    adjusted: quantity !== requested,
+    oldStock,
+    newStock: product.stock,
     product,
   };
 }
 
-function increaseStock(id, quantity) {
+function setActive(id, active) {
   const product = getProductById(id);
 
   if (!product) {
-    return null;
+    return {
+      success: false,
+      reason: "PRODUCT_NOT_FOUND",
+    };
   }
 
-  const amount = Number(quantity);
+  const oldStatus = product.active;
 
-  if (!Number.isInteger(amount) || amount <= 0) {
-    return null;
-  }
-
-  product.stock += amount;
+  product.active = Boolean(active);
   product.updatedAt = new Date().toISOString();
 
-  return product;
+  return {
+    success: true,
+    oldStatus,
+    newStatus: product.active,
+    product,
+  };
 }
 
+function isAvailable(id) {
+  const product = getProductById(id);
+
+  return Boolean(
+    product &&
+    product.active &&
+    product.stock > 0
+  );
+}
+
+function calculateTotal(id, quantity) {
+  const product = getProductById(id);
+  const amount = Number(quantity);
+
+  if (!product) return null;
+
+  if (
+    !Number.isInteger(amount) ||
+    amount < 1 ||
+    amount > config.purchase.maxQuantity
+  ) {
+    return null;
+  }
+
+  return Number((product.price * amount).toFixed(2));
+}
+
+initializeProducts();
+
 module.exports = {
-  createProduct,
+  initializeProducts,
   getProducts,
   getProductById,
   getProductByName,
-  updateProduct,
-  decreaseStock,
-  increaseStock,
+  setPrice,
+  setStock,
+  addStock,
+  removeStock,
+  setActive,
+  isAvailable,
+  calculateTotal,
 };
