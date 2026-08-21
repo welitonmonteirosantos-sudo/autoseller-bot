@@ -1052,10 +1052,15 @@ async function publishStaticPanels(guild) {
   if (steamCh) {
     const oldId = await getSetting(guild.id, 'steam_panel_message_id');
     const payload = {
+      files: [{
+        attachment: path.join(__dirname, '..', 'steam.png'),
+        name: 'steam.png',
+      }],
       embeds: [new EmbedBuilder()
         .setColor(CONFIG.brand.color)
         .setTitle("🎮 Berovenda's — Contas Steam")
-        .setDescription('Contas Steam compartilhadas disponíveis para entrega automática após a confirmação do pagamento.\n\nAs credenciais ficam protegidas e só são enviadas ao comprador.')],
+        .setDescription('Contas Steam compartilhadas disponíveis para entrega automática após a confirmação do pagamento.\n\nAs credenciais ficam protegidas e só são enviadas ao comprador.')
+        .setImage('attachment://steam.png')],
       components: [new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('steam_browse').setLabel('Ver contas disponíveis').setEmoji('🎮').setStyle(ButtonStyle.Danger),
       )],
@@ -1069,10 +1074,15 @@ async function publishStaticPanels(guild) {
   if (giveawayCh) {
     const oldId = await getSetting(guild.id, 'giveaway_panel_message_id');
     const payload = {
+      files: [{
+        attachment: path.join(__dirname, '..', 'sorte.png'),
+        name: 'sorte.png',
+      }],
       embeds: [new EmbedBuilder()
         .setColor(CONFIG.brand.color)
         .setTitle('🎉 Sorteios — Berovenda\'s')
-        .setDescription('Os sorteios ativos aparecem neste canal. Clique em **Participar** no sorteio desejado. O vencedor recebe automaticamente o cargo **🍀・Sortudo**.')],
+        .setDescription('Os sorteios ativos aparecem neste canal. Clique em **Participar** no sorteio desejado. O vencedor recebe automaticamente o cargo **🍀・Sortudo**.')
+        .setImage('attachment://sorte.png')],
     };
     const old = oldId ? await giveawayCh.messages.fetch(oldId).catch(() => null) : null;
     const msg = old ? await old.edit(payload) : await giveawayCh.send(payload);
@@ -1083,13 +1093,18 @@ async function publishStaticPanels(guild) {
   if (tradesCh) {
     const oldId = await getSetting(guild.id, 'trades_panel_message_id');
     const payload = {
+      files: [{
+        attachment: path.join(__dirname, '..', 'trocaaqui.png'),
+        name: 'trocaaqui.png',
+      }],
       embeds: [new EmbedBuilder()
         .setColor(CONFIG.brand.color)
         .setTitle('🔄 Trocas entre membros')
         .setDescription(
           'Publique uma troca de conta/item com **foto obrigatória**. O anúncio fica ativo por **30 minutos**.\n\n' +
           'Quem tiver interesse pode clicar em **Oferta** e enviar foto + descrição opcional. Se uma oferta for aceita, o bot abre um ticket privado visível somente pelos dois participantes, o **DONO** e, se solicitado, o mediador escolhido.'
-        )],
+        )
+        .setImage('attachment://trocaaqui.png')],
       components: [new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('trade_create').setLabel('Criar anúncio').setEmoji('🔄').setStyle(ButtonStyle.Danger),
       )],
@@ -1269,6 +1284,7 @@ async function createPurchase(user, guild, productId, requestedQuantity) {
         { name: 'Status', value: '🟡 Aguardando pagamento', inline: true },
         { name: 'Pagamento', value: paymentInstructions, inline: false },
       )
+      .setImage('attachment://tickets.png')
       .setTimestamp();
     const buttons = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`purchase_paid:${purchase.id}`).setLabel('Pagamento recebido').setEmoji('💰').setStyle(ButtonStyle.Danger),
@@ -1276,7 +1292,15 @@ async function createPurchase(user, guild, productId, requestedQuantity) {
       new ButtonBuilder().setCustomId(`purchase_cancel:${purchase.id}`).setLabel('Cancelar').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('ticket_close').setLabel('Fechar ticket').setStyle(ButtonStyle.Secondary),
     );
-    await ticket.send({ content: `<@${user.id}>`, embeds: [embed], components: [buttons] });
+    await ticket.send({
+      content: `<@${user.id}>`,
+      files: [{
+        attachment: path.join(__dirname, '..', 'tickets.png'),
+        name: 'tickets.png',
+      }],
+      embeds: [embed],
+      components: [buttons],
+    });
 
     await pool.query('DELETE FROM waitlist WHERE product_id=$1 AND user_id=$2', [productId, user.id]);
     await addHistory('PURCHASE_CREATED', {
@@ -1899,9 +1923,14 @@ async function createSteamPurchase(interaction, accountId) {
     await pool.query(`UPDATE purchases SET ticket_id=$2 WHERE id=$1`, [purchase.id, ticket.id]);
     await ticket.send({
       content: `<@${interaction.user.id}>`,
+      files: [{
+        attachment: path.join(__dirname, '..', 'tickets.png'),
+        name: 'tickets.png',
+      }],
       embeds: [new EmbedBuilder()
         .setColor(CONFIG.brand.color)
         .setTitle(`🎮 Pedido Steam #${purchase.id}`)
+        .setImage('attachment://tickets.png')
         .addFields(
           { name: 'Jogo', value: purchase.product_name, inline: true },
           { name: 'Valor', value: money(purchase.total), inline: true },
@@ -2212,9 +2241,14 @@ async function createTradeTicket(guild, trade, offer) {
   );
   await ch.send({
     content: `<@${trade.advertiser_id}> <@${offer.offerer_id}>`,
+    files: [{
+      attachment: path.join(__dirname, '..', 'tickets.png'),
+      name: 'tickets.png',
+    }],
     embeds: [new EmbedBuilder()
       .setColor(CONFIG.brand.color)
       .setTitle(`🔄 Negociação privada — troca #${trade.id}`)
+      .setImage('attachment://tickets.png')
       .setDescription(
         'Somente os dois participantes e o **DONO** podem ver este ticket inicialmente.\n\n' +
         '🛡️ **Chamar ADM** — mediação custa **R$ 10,00** e o valor fica 100% com o mediador.\n' +
@@ -2675,7 +2709,11 @@ client.on('interactionCreate', async (interaction) => {
       const ticket = await createPrivateTicket(interaction.guild, interaction.user, 'support');
       await ticket.send({
         content: `<@${interaction.user.id}>`,
-        embeds: [new EmbedBuilder().setColor(CONFIG.brand.color).setTitle('🛠️ Ticket de suporte').setDescription('Descreva sua dúvida ou problema. A equipe responderá aqui.')],
+        files: [{
+          attachment: path.join(__dirname, '..', 'tickets.png'),
+          name: 'tickets.png',
+        }],
+        embeds: [new EmbedBuilder().setColor(CONFIG.brand.color).setTitle('🛠️ Ticket de suporte').setDescription('Descreva sua dúvida ou problema. A equipe responderá aqui.').setImage('attachment://tickets.png')],
         components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('ticket_close').setLabel('Fechar ticket').setStyle(ButtonStyle.Secondary))],
       });
       await addHistory('SUPPORT_TICKET_OPEN', { userId: interaction.user.id, username: interaction.user.username, details: { ticketId: ticket.id } });
