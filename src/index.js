@@ -29,12 +29,20 @@ const CONFIG = {
     mod: '🔧 MOD',
     bot: '🤖 BOT',
     customer: '👤 CLIENTE',
+    verified: '✅・Verificado',
+    visitor: '🚪・Visitante',
+    depressed: '🌧️・Depressivo',
+    male: '♂️・Homem',
+    female: '♀️・Mulher',
+    adult: '🔞・+18',
+    minor: '🧸・-18',
   },
   categories: {
     public: 'AUTSELLER',
     admin: 'ADMINISTRAÇÃO',
     purchases: '🛒 COMPRAS',
     support: '🛠️ SUPORTE',
+    entry: '🚪 ENTRADA',
   },
   channels: {
     announcements: '📢・avisos',
@@ -47,9 +55,27 @@ const CONFIG = {
     logs: '📋・logs',
     history: '📊・histórico',
     sales: '🛒・vendas',
+    adminChat: '💬・chat-admin',
     commands: '📚・comandos',
+    welcome: '👋・boas-vindas',
+    verification: '✅・verificação',
+    selfRoles: '🎭・escolha-seus-cargos',
+    inactive: '🌧️・inativos',
   },
 };
+
+const SELF_ROLES = [
+  { key: 'otaku', name: '⚔️・Otaku', emoji: '⚔️' },
+  { key: 'roblox', name: '🎮・Roblox', emoji: '🎮' },
+  { key: 'freefire', name: '🔥・Free Fire', emoji: '🔥' },
+  { key: 'emo', name: '🖤・Emo', emoji: '🖤' },
+  { key: 'calmo', name: '🌸・Calmo', emoji: '🌸' },
+  { key: 'noturno', name: '🌙・Noturno', emoji: '🌙' },
+  { key: 'musica', name: '🎧・Música', emoji: '🎧' },
+  { key: 'competitivo', name: '🏆・Competitivo', emoji: '🏆' },
+];
+
+const INACTIVITY_MS = 3 * 24 * 60 * 60 * 1000;
 
 if (!process.env.DISCORD_TOKEN) throw new Error('DISCORD_TOKEN não configurado.');
 if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL não configurada.');
@@ -62,6 +88,7 @@ const pool = new Pool({
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
@@ -191,14 +218,46 @@ async function setupDatabase() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY(guild_id, user_id)
     );
+
+    CREATE TABLE IF NOT EXISTS member_profiles (
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      gender TEXT,
+      age_group TEXT,
+      terms_accepted_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY(guild_id, user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS member_activity (
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      username TEXT NOT NULL,
+      joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_message_at TIMESTAMPTZ,
+      depressed_applied_at TIMESTAMPTZ,
+      PRIMARY KEY(guild_id, user_id)
+    );
   `);
 
+  await pool.query(`ALTER TABLE waitlist ADD COLUMN IF NOT EXISTS notified_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE waitlist ADD COLUMN IF NOT EXISTS opportunity_expires_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS guild_id TEXT`);
   await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS subtotal NUMERIC(10,2)`);
   await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS discount NUMERIC(10,2) NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS coupon_code TEXT`);
+  await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS ticket_id TEXT`);
+  await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'PENDING'`);
   await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS product_id TEXT`);
+  await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS max_uses INTEGER`);
+  await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS max_uses_per_user INTEGER NOT NULL DEFAULT 1`);
+  await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS used_count INTEGER NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE`);
   await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS created_by TEXT`);
 
   for (const p of Object.values(CONFIG.products)) {
@@ -577,50 +636,156 @@ async function resumeWaitlistTimers(guild) {
 async function ensureCategory(guild, name, overwrites = undefined) {
   let c = guild.channels.cache.find((x) => x.type === ChannelType.GuildCategory && x.name === name);
   if (!c) c = await guild.channels.create({ name, type: ChannelType.GuildCategory, permissionOverwrites: overwrites });
+  else if (overwrites) await c.permissionOverwrites.set(overwrites).catch(() => {});
   return c;
 }
 
 async function ensureTextChannel(guild, name, parent, overwrites = undefined) {
   let c = findChannel(guild, name);
   if (!c) c = await guild.channels.create({ name, type: ChannelType.GuildText, parent: parent?.id, permissionOverwrites: overwrites });
+  else {
+    if (parent && c.parentId !== parent.id) await c.setParent(parent.id, { lockPermissions: false }).catch(() => {});
+    if (overwrites) await c.permissionOverwrites.set(overwrites).catch(() => {});
+    else if (parent) await c.lockPermissions().catch(() => {});
+  }
   return c;
 }
 
-async function ensureServerStructure(guild) {
-  const adminRole = findRole(guild, CONFIG.roles.admin);
-  const ownerRole = findRole(guild, CONFIG.roles.owner);
-  const customerRole = findRole(guild, CONFIG.roles.customer);
+async function ensureRole(guild, name, color = 0x2b2d31) {
+  let role = findRole(guild, name);
+  if (!role) role = await guild.roles.create({ name, color, reason: "Berovenda's setup" });
+  return role;
+}
 
-  const publicCat = await ensureCategory(guild, CONFIG.categories.public);
+async function seedMemberActivity(guild) {
+  const members = await guild.members.fetch().catch(() => guild.members.cache);
+  for (const member of members.values()) {
+    if (member.user.bot) continue;
+    await pool.query(
+      `INSERT INTO member_activity(guild_id,user_id,username,joined_at,last_message_at)
+       VALUES($1,$2,$3,$4,NOW())
+       ON CONFLICT(guild_id,user_id) DO UPDATE SET username=EXCLUDED.username`,
+      [guild.id, member.id, member.user.username, member.joinedAt || new Date()],
+    );
+  }
+}
+
+async function recordMemberActivity(member) {
+  if (!member || member.user.bot) return;
+  await pool.query(
+    `INSERT INTO member_activity(guild_id,user_id,username,joined_at,last_message_at,depressed_applied_at)
+     VALUES($1,$2,$3,$4,NOW(),NULL)
+     ON CONFLICT(guild_id,user_id) DO UPDATE SET username=EXCLUDED.username,last_message_at=NOW(),depressed_applied_at=NULL`,
+    [member.guild.id, member.id, member.user.username, member.joinedAt || new Date()],
+  );
+  const depressed = findRole(member.guild, CONFIG.roles.depressed);
+  if (depressed && member.roles.cache.has(depressed.id)) await member.roles.remove(depressed).catch(() => {});
+}
+
+async function checkInactiveMembers() {
+  for (const guild of client.guilds.cache.values()) {
+    const depressed = findRole(guild, CONFIG.roles.depressed);
+    if (!depressed) continue;
+    const rows = (await pool.query(
+      `SELECT * FROM member_activity
+       WHERE guild_id=$1 AND depressed_applied_at IS NULL
+       AND COALESCE(last_message_at, joined_at) <= NOW() - INTERVAL '3 days'`,
+      [guild.id],
+    )).rows;
+    for (const row of rows) {
+      const member = await guild.members.fetch(row.user_id).catch(() => null);
+      if (!member || member.user.bot || isAdmin(member)) continue;
+      if (!member.roles.cache.has(depressed.id)) await member.roles.add(depressed).catch(() => {});
+      await pool.query('UPDATE member_activity SET depressed_applied_at=NOW() WHERE guild_id=$1 AND user_id=$2', [guild.id, row.user_id]);
+      const ch = findChannel(guild, CONFIG.channels.inactive);
+      if (ch) {
+        const embed = new EmbedBuilder()
+          .setColor(0x5865f2)
+          .setTitle('🌧️ Novo membro do clube dos sumidos')
+          .setDescription(`Anão... após <@${member.id}> ficar **3 dias sem conversar**, se tornou ${depressed}.`)
+          .setImage('attachment://tristekawai.png')
+          .setTimestamp();
+        await ch.send({
+          content: '||@everyone||',
+          embeds: [embed],
+          files: [{ attachment: path.join(__dirname, '..', 'tristekawai.png'), name: 'tristekawai.png' }],
+          allowedMentions: { parse: ['everyone', 'users', 'roles'] },
+        }).catch(() => {});
+      }
+    }
+  }
+}
+
+async function ensureServerStructure(guild) {
+  const ownerRole = await ensureRole(guild, CONFIG.roles.owner, 0xed1c24);
+  const adminRole = await ensureRole(guild, CONFIG.roles.admin, 0xed1c24);
+  const modRole = await ensureRole(guild, CONFIG.roles.mod, 0xffffff);
+  await ensureRole(guild, CONFIG.roles.bot, 0x2b2d31);
+  const customerRole = await ensureRole(guild, CONFIG.roles.customer, 0xffffff);
+  const verifiedRole = await ensureRole(guild, CONFIG.roles.verified, 0xed1c24);
+  const visitorRole = await ensureRole(guild, CONFIG.roles.visitor, 0x808080);
+  await ensureRole(guild, CONFIG.roles.depressed, 0x5865f2);
+  await ensureRole(guild, CONFIG.roles.male, 0x3498db);
+  await ensureRole(guild, CONFIG.roles.female, 0xff69b4);
+  await ensureRole(guild, CONFIG.roles.adult, 0xed1c24);
+  await ensureRole(guild, CONFIG.roles.minor, 0xffffff);
+  for (const item of SELF_ROLES) await ensureRole(guild, item.name, 0x2b2d31);
+
+  const adminAllow = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.AttachFiles];
   const adminOverwrites = [
     { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-    ...(adminRole ? [{ id: adminRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }] : []),
-    ...(ownerRole ? [{ id: ownerRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }] : []),
+    { id: adminRole.id, allow: adminAllow },
+    { id: ownerRole.id, allow: adminAllow },
+    { id: modRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
   ];
+
+  const entryOverwrites = [
+    { id: guild.roles.everyone.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory], deny: [PermissionFlagsBits.SendMessages] },
+    { id: adminRole.id, allow: adminAllow },
+    { id: ownerRole.id, allow: adminAllow },
+  ];
+
+  const publicOverwrites = [
+    { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+    { id: verifiedRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.SendMessages] },
+    { id: adminRole.id, allow: adminAllow },
+    { id: ownerRole.id, allow: adminAllow },
+    { id: modRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+  ];
+
+  const entryCat = await ensureCategory(guild, CONFIG.categories.entry, entryOverwrites);
+  const publicCat = await ensureCategory(guild, CONFIG.categories.public, publicOverwrites);
   const adminCat = await ensureCategory(guild, CONFIG.categories.admin, adminOverwrites);
   const purchaseCat = await ensureCategory(guild, CONFIG.categories.purchases, [{ id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] }]);
   const supportCat = await ensureCategory(guild, CONFIG.categories.support, [{ id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] }]);
+
+  await ensureTextChannel(guild, CONFIG.channels.welcome, entryCat, entryOverwrites);
+  await ensureTextChannel(guild, CONFIG.channels.terms, entryCat, entryOverwrites);
+  await ensureTextChannel(guild, CONFIG.channels.verification, entryCat, entryOverwrites);
 
   await ensureTextChannel(guild, CONFIG.channels.announcements, publicCat);
   await ensureTextChannel(guild, CONFIG.channels.buy, publicCat);
   await ensureTextChannel(guild, CONFIG.channels.supportPanel, publicCat);
   await ensureTextChannel(guild, CONFIG.channels.waitlist, publicCat);
-  await ensureTextChannel(guild, CONFIG.channels.terms, publicCat);
+  await ensureTextChannel(guild, CONFIG.channels.selfRoles, publicCat);
+  await ensureTextChannel(guild, CONFIG.channels.inactive, publicCat);
 
   const feedbackOverwrites = [
     { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-    ...(customerRole ? [{ id: customerRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] }] : []),
-    ...(adminRole ? [{ id: adminRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] }] : []),
-    ...(ownerRole ? [{ id: ownerRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] }] : []),
+    { id: customerRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] },
+    { id: adminRole.id, allow: adminAllow },
+    { id: ownerRole.id, allow: adminAllow },
   ];
   await ensureTextChannel(guild, CONFIG.channels.feedback, publicCat, feedbackOverwrites);
   await ensureTextChannel(guild, CONFIG.channels.admin, adminCat, adminOverwrites);
+  await ensureTextChannel(guild, CONFIG.channels.adminChat, adminCat, adminOverwrites);
+  await ensureTextChannel(guild, CONFIG.channels.commands, adminCat, adminOverwrites);
   await ensureTextChannel(guild, CONFIG.channels.logs, adminCat, adminOverwrites);
   await ensureTextChannel(guild, CONFIG.channels.history, adminCat, adminOverwrites);
   await ensureTextChannel(guild, CONFIG.channels.sales, adminCat, adminOverwrites);
-  await ensureTextChannel(guild, CONFIG.channels.commands, adminCat, adminOverwrites);
 
-  return { publicCat, adminCat, purchaseCat, supportCat };
+  await seedMemberActivity(guild);
+  return { entryCat, publicCat, adminCat, purchaseCat, supportCat, verifiedRole, visitorRole };
 }
 
 async function publishStaticPanels(guild) {
@@ -628,65 +793,21 @@ async function publishStaticPanels(guild) {
   if (supportCh) {
     const oldId = await getSetting(guild.id, 'support_panel_message_id');
     const payload = {
-      files: [{
-        attachment: path.join(__dirname, '..', 'kawai.png'),
-        name: 'kawai.png',
-      }],
-      embeds: [
-        new EmbedBuilder()
-          .setColor(CONFIG.brand.color)
-          .setTitle('🛠️ Suporte — Berovenda\'s')
-          .setDescription('Precisa de ajuda? Abra um ticket privado de suporte pelo botão abaixo.')
-          .setImage('attachment://kawai.png'),
-      ],
-      components: [
-        new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId('support_open')
-            .setLabel('Abrir suporte')
-            .setEmoji('🎫')
-            .setStyle(ButtonStyle.Danger),
-        ),
-      ],
+      files: [{ attachment: path.join(__dirname, '..', 'kawai.png'), name: 'kawai.png' }],
+      embeds: [new EmbedBuilder().setColor(CONFIG.brand.color).setTitle('🛠️ Suporte — Berovenda\'s').setDescription('Precisa de ajuda? Abra um ticket privado de suporte pelo botão abaixo.').setImage('attachment://kawai.png')],
+      components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('support_open').setLabel('Abrir suporte').setEmoji('🎫').setStyle(ButtonStyle.Danger))],
     };
     const old = oldId ? await supportCh.messages.fetch(oldId).catch(() => null) : null;
     const msg = old ? await old.edit(payload) : await supportCh.send(payload);
     await setSetting(guild.id, 'support_panel_message_id', msg.id);
   }
 
-  const commandsCh = findChannel(guild, CONFIG.channels.commands);
-  if (commandsCh) {
-    const oldId = await getSetting(guild.id, 'commands_message_id');
-    const payload = {
-      embeds: [
-        new EmbedBuilder()
-          .setColor(CONFIG.brand.color)
-          .setTitle("📚 Berovenda's — Comandos")
-          .setDescription(
-            '**Comandos disponíveis**\n\n' +
-            '`+ping` — testa se o bot está online.\n' +
-            '`+setup` — verifica/cria a estrutura do servidor e atualiza os painéis. **DONO/ADMIN**\n' +
-            '`+painel` — atualiza/publica o painel de compras. **DONO/ADMIN**\n' +
-            '`+admin` — atualiza/publica o painel administrativo. **DONO/ADMIN**\n' +
-            '`+hs 10` — apaga a quantidade informada dos registros mais antigos do histórico comum. **DONO/ADMIN**\n' +
-            '`+excluir 1` até `+excluir 100` — apaga mensagens recentes do canal onde o comando foi usado. **DONO/ADMIN**\n\n' +
-            '🔒 Os logs administrativos continuam separados e protegidos do `+hs`.'
-          )
-          .setFooter({ text: "Berovenda's • Administração" })
-          .setTimestamp(),
-      ],
-    };
-
-    const old = oldId ? await commandsCh.messages.fetch(oldId).catch(() => null) : null;
-    const msg = old ? await old.edit(payload) : await commandsCh.send(payload);
-    await setSetting(guild.id, 'commands_message_id', msg.id);
-  }
-
   const waitCh = findChannel(guild, CONFIG.channels.waitlist);
   if (waitCh) {
     const oldId = await getSetting(guild.id, 'waitlist_panel_message_id');
     const payload = {
-      embeds: [new EmbedBuilder().setColor(CONFIG.brand.color).setTitle('👥 Lista de espera').setDescription('Quando um produto estiver sem estoque, entre na fila pelo painel de compras. Use os botões abaixo para consultar sua posição ou sair da fila.')],
+      files: [{ attachment: path.join(__dirname, '..', 'kawai1.png'), name: 'kawai1.png' }],
+      embeds: [new EmbedBuilder().setColor(CONFIG.brand.color).setTitle('👥 Lista de espera').setDescription('Quando um produto estiver sem estoque, entre na fila pelo painel de compras. Use os botões abaixo para consultar sua posição ou sair da fila.').setImage('attachment://kawai1.png')],
       components: [new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('wait_my_position').setLabel('Minha posição').setStyle(ButtonStyle.Danger),
         new ButtonBuilder().setCustomId('wait_leave_menu').setLabel('Sair da espera').setStyle(ButtonStyle.Secondary),
@@ -695,6 +816,71 @@ async function publishStaticPanels(guild) {
     const old = oldId ? await waitCh.messages.fetch(oldId).catch(() => null) : null;
     const msg = old ? await old.edit(payload) : await waitCh.send(payload);
     await setSetting(guild.id, 'waitlist_panel_message_id', msg.id);
+  }
+
+  const verifyCh = findChannel(guild, CONFIG.channels.verification);
+  if (verifyCh) {
+    const oldId = await getSetting(guild.id, 'verification_message_id');
+    const payload = {
+      embeds: [new EmbedBuilder()
+        .setColor(CONFIG.brand.color)
+        .setTitle("✅ Berovenda's — Verificação")
+        .setDescription('Para liberar o servidor, escolha seu perfil e depois aceite os termos.\n\n**1. Gênero**\nEscolha Homem ou Mulher.\n\n**2. Faixa etária**\nEscolha +18 ou -18.\n\n**3. Termos**\nLeia o canal de termos e clique em **Concordo com os termos**.')],
+      components: [
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('verify_gender:male').setLabel('Homem').setEmoji('♂️').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('verify_gender:female').setLabel('Mulher').setEmoji('♀️').setStyle(ButtonStyle.Secondary),
+        ),
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('verify_age:adult').setLabel('+18').setEmoji('🔞').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('verify_age:minor').setLabel('-18').setEmoji('🧸').setStyle(ButtonStyle.Secondary),
+        ),
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('verify_accept').setLabel('Concordo com os termos').setEmoji('✅').setStyle(ButtonStyle.Danger),
+        ),
+      ],
+    };
+    const old = oldId ? await verifyCh.messages.fetch(oldId).catch(() => null) : null;
+    const msg = old ? await old.edit(payload) : await verifyCh.send(payload);
+    await setSetting(guild.id, 'verification_message_id', msg.id);
+  }
+
+  const rolesCh = findChannel(guild, CONFIG.channels.selfRoles);
+  if (rolesCh) {
+    const oldId = await getSetting(guild.id, 'self_roles_message_id');
+    const rows = [];
+    for (let i = 0; i < SELF_ROLES.length; i += 4) {
+      rows.push(new ActionRowBuilder().addComponents(...SELF_ROLES.slice(i, i + 4).map((item) =>
+        new ButtonBuilder().setCustomId(`selfrole:${item.key}`).setLabel(item.name.replace(/^.+?・/, '')).setEmoji(item.emoji).setStyle(ButtonStyle.Secondary)
+      )));
+    }
+    const payload = {
+      embeds: [new EmbedBuilder().setColor(CONFIG.brand.color).setTitle('🎭 Escolha seus cargos').setDescription(
+        'Clique para **adicionar ou remover** seus cargos.\n\n' +
+        SELF_ROLES.map((x) => `${x.emoji} ${x.name}`).join('\n') +
+        `\n\n🌧️ **${CONFIG.roles.depressed}** é automático: aparece após 3 dias sem conversar e sai quando você volta a falar.`
+      )],
+      components: rows,
+    };
+    const old = oldId ? await rolesCh.messages.fetch(oldId).catch(() => null) : null;
+    const msg = old ? await old.edit(payload) : await rolesCh.send(payload);
+    await setSetting(guild.id, 'self_roles_message_id', msg.id);
+  }
+
+  const commandsCh = findChannel(guild, CONFIG.channels.commands);
+  if (commandsCh) {
+    const oldId = await getSetting(guild.id, 'commands_message_id');
+    const payload = { embeds: [new EmbedBuilder().setColor(CONFIG.brand.color).setTitle('📚 Comandos administrativos').setDescription(
+      '`+ping` — testa o bot.\n' +
+      '`+setup` — cria/verifica cargos, canais, permissões e painéis.\n' +
+      '`+painel` — atualiza o painel de compras.\n' +
+      '`+admin` — atualiza o painel administrativo.\n' +
+      '`+hs 10` — apaga 10 registros mais antigos do histórico comum.\n' +
+      '`+excluir 1` até `+excluir 100` — apaga mensagens recentes do canal atual.\n\n🔒 Comandos administrativos: **DONO/ADMIN**.'
+    ).setTimestamp()] };
+    const old = oldId ? await commandsCh.messages.fetch(oldId).catch(() => null) : null;
+    const msg = old ? await old.edit(payload) : await commandsCh.send(payload);
+    await setSetting(guild.id, 'commands_message_id', msg.id);
   }
 
   const termsCh = findChannel(guild, CONFIG.channels.terms);
@@ -1196,6 +1382,8 @@ client.once('ready', async () => {
     for (const guild of client.guilds.cache.values()) {
       await resumeWaitlistTimers(guild).catch(console.error);
     }
+    await checkInactiveMembers().catch(console.error);
+    setInterval(() => checkInactiveMembers().catch(console.error), 60 * 60 * 1000);
   } catch (e) {
     console.error('Inicialização:', e);
   }
@@ -1203,6 +1391,7 @@ client.once('ready', async () => {
 
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) return;
+  await recordMemberActivity(message.member).catch(console.error);
   const content = message.content.trim();
   try {
     if (content === '+ping') return message.reply('🏓 Pong!');
@@ -1234,37 +1423,15 @@ client.on('messageCreate', async (message) => {
 
     if (content.startsWith('+excluir')) {
       if (!isAdmin(message.member)) return message.reply('❌ Sem permissão.');
-
       const parts = content.split(/\s+/);
-      const amount = Number(parts[1]);
-
-      if (parts.length !== 2 || !Number.isInteger(amount) || amount < 1 || amount > 100) {
-        return message.reply('❌ Use: `+excluir 1` até `+excluir 100`');
-      }
-
-      if (typeof message.channel.bulkDelete !== 'function') {
-        return message.reply('❌ Este comando só pode ser usado em canais de texto compatíveis.');
-      }
-
+      const n = Number(parts[1]);
+      if (parts.length !== 2 || !Number.isInteger(n) || n < 1 || n > 100) return message.reply('❌ Use: `+excluir 1` até `+excluir 100`');
+      if (typeof message.channel.bulkDelete !== 'function') return message.reply('❌ Este canal não permite exclusão em massa.');
       await message.delete().catch(() => {});
-      const deleted = await message.channel.bulkDelete(amount, true);
-
-      await adminLog(message.guild, message.author, 'DELETE_MESSAGES', {
-        details: {
-          channelId: message.channel.id,
-          requested: amount,
-          deleted: deleted.size,
-        },
-      });
-
-      const confirmation = await message.channel.send(
-        `🗑️ **${deleted.size}** mensagem(ns) apagada(s).` +
-        (deleted.size < amount ? '\n⚠️ Algumas mensagens podem ter mais de 14 dias e não podem ser apagadas em massa pelo Discord.' : '')
-      ).catch(() => null);
-
-      if (confirmation) {
-        setTimeout(() => confirmation.delete().catch(() => {}), 4000);
-      }
+      const deleted = await message.channel.bulkDelete(n, true);
+      await adminLog(message.guild, message.author, 'DELETE_MESSAGES', { details: { channelId: message.channel.id, requested: n, deleted: deleted.size } });
+      const confirmation = await message.channel.send(`🗑️ **${deleted.size}** mensagem(ns) apagada(s).${deleted.size < n ? '\n⚠️ Mensagens com mais de 14 dias não podem ser apagadas em massa pelo Discord.' : ''}`).catch(() => null);
+      if (confirmation) setTimeout(() => confirmation.delete().catch(() => {}), 4000);
       return;
     }
 
@@ -1283,9 +1450,103 @@ client.on('messageCreate', async (message) => {
   }
 });
 
+client.on('guildMemberAdd', async (member) => {
+  if (member.user.bot) return;
+  try {
+    const visitor = findRole(member.guild, CONFIG.roles.visitor);
+    if (visitor) await member.roles.add(visitor).catch(() => {});
+    await pool.query(
+      `INSERT INTO member_activity(guild_id,user_id,username,joined_at,last_message_at,depressed_applied_at)
+       VALUES($1,$2,$3,NOW(),NULL,NULL)
+       ON CONFLICT(guild_id,user_id) DO UPDATE SET username=EXCLUDED.username,joined_at=NOW(),last_message_at=NULL,depressed_applied_at=NULL`,
+      [member.guild.id, member.id, member.user.username],
+    );
+    await pool.query(
+      `INSERT INTO member_profiles(guild_id,user_id) VALUES($1,$2)
+       ON CONFLICT(guild_id,user_id) DO NOTHING`,
+      [member.guild.id, member.id],
+    );
+    const ch = findChannel(member.guild, CONFIG.channels.welcome);
+    const verifyCh = findChannel(member.guild, CONFIG.channels.verification);
+    if (ch) {
+      const embed = new EmbedBuilder()
+        .setColor(CONFIG.brand.color)
+        .setAuthor({ name: member.user.username, iconURL: member.user.displayAvatarURL() })
+        .setThumbnail(member.user.displayAvatarURL({ size: 256 }))
+        .setTitle(`👋 Seja bem-vindo, ${member.displayName}!`)
+        .setDescription(`Seja bem-vindo! <@${member.id}> 🎉\n\nAntes de acessar o servidor, faça sua verificação${verifyCh ? ` em ${verifyCh}` : ''}. Escolha seu perfil e aceite os termos para liberar os canais.`)
+        .addFields({ name: '🚪 Status', value: `Você entrou como **${CONFIG.roles.visitor}** até concluir a verificação.` })
+        .setTimestamp();
+      await ch.send({ content: `<@${member.id}>`, embeds: [embed] });
+    }
+  } catch (e) { console.error('Boas-vindas:', e); }
+});
+
 client.on('interactionCreate', async (interaction) => {
   try {
     const id = interaction.customId || '';
+
+    if (id.startsWith('verify_gender:')) {
+      if (!interaction.guild || !interaction.member) return interaction.reply({ content: '❌ Use dentro do servidor.', ephemeral: true });
+      const choice = id.split(':')[1];
+      const selected = choice === 'male' ? CONFIG.roles.male : CONFIG.roles.female;
+      const opposite = choice === 'male' ? CONFIG.roles.female : CONFIG.roles.male;
+      const selectedRole = findRole(interaction.guild, selected);
+      const oppositeRole = findRole(interaction.guild, opposite);
+      if (oppositeRole) await interaction.member.roles.remove(oppositeRole).catch(() => {});
+      if (selectedRole) await interaction.member.roles.add(selectedRole).catch(() => {});
+      await pool.query(
+        `INSERT INTO member_profiles(guild_id,user_id,gender,updated_at) VALUES($1,$2,$3,NOW())
+         ON CONFLICT(guild_id,user_id) DO UPDATE SET gender=EXCLUDED.gender,updated_at=NOW()`,
+        [interaction.guild.id, interaction.user.id, choice],
+      );
+      return interaction.reply({ content: `✅ Perfil atualizado: **${selected}**.`, ephemeral: true });
+    }
+
+    if (id.startsWith('verify_age:')) {
+      if (!interaction.guild || !interaction.member) return interaction.reply({ content: '❌ Use dentro do servidor.', ephemeral: true });
+      const choice = id.split(':')[1];
+      const selected = choice === 'adult' ? CONFIG.roles.adult : CONFIG.roles.minor;
+      const opposite = choice === 'adult' ? CONFIG.roles.minor : CONFIG.roles.adult;
+      const selectedRole = findRole(interaction.guild, selected);
+      const oppositeRole = findRole(interaction.guild, opposite);
+      if (oppositeRole) await interaction.member.roles.remove(oppositeRole).catch(() => {});
+      if (selectedRole) await interaction.member.roles.add(selectedRole).catch(() => {});
+      await pool.query(
+        `INSERT INTO member_profiles(guild_id,user_id,age_group,updated_at) VALUES($1,$2,$3,NOW())
+         ON CONFLICT(guild_id,user_id) DO UPDATE SET age_group=EXCLUDED.age_group,updated_at=NOW()`,
+        [interaction.guild.id, interaction.user.id, choice],
+      );
+      return interaction.reply({ content: `✅ Faixa etária atualizada: **${selected}**.`, ephemeral: true });
+    }
+
+    if (id === 'verify_accept') {
+      if (!interaction.guild || !interaction.member) return interaction.reply({ content: '❌ Use dentro do servidor.', ephemeral: true });
+      const profile = (await pool.query('SELECT * FROM member_profiles WHERE guild_id=$1 AND user_id=$2', [interaction.guild.id, interaction.user.id])).rows[0];
+      if (!profile?.gender || !profile?.age_group) return interaction.reply({ content: '⚠️ Primeiro escolha **Homem/Mulher** e **+18/-18**.', ephemeral: true });
+      const verified = findRole(interaction.guild, CONFIG.roles.verified);
+      const visitor = findRole(interaction.guild, CONFIG.roles.visitor);
+      if (verified) await interaction.member.roles.add(verified).catch(() => {});
+      if (visitor) await interaction.member.roles.remove(visitor).catch(() => {});
+      await pool.query('UPDATE member_profiles SET terms_accepted_at=NOW(),updated_at=NOW() WHERE guild_id=$1 AND user_id=$2', [interaction.guild.id, interaction.user.id]);
+      await addHistory('MEMBER_VERIFIED', { userId: interaction.user.id, username: interaction.user.username, details: { gender: profile.gender, ageGroup: profile.age_group } });
+      return interaction.reply({ content: "✅ Verificação concluída. O servidor foi liberado para você. Bem-vindo à **Berovenda's**!", ephemeral: true });
+    }
+
+    if (id.startsWith('selfrole:')) {
+      if (!interaction.guild || !interaction.member) return interaction.reply({ content: '❌ Use dentro do servidor.', ephemeral: true });
+      const key = id.split(':')[1];
+      const item = SELF_ROLES.find((x) => x.key === key);
+      if (!item) return interaction.reply({ content: '❌ Cargo não encontrado.', ephemeral: true });
+      const role = findRole(interaction.guild, item.name);
+      if (!role) return interaction.reply({ content: '❌ Cargo ainda não foi criado. Peça a um admin para usar `+setup`.', ephemeral: true });
+      if (interaction.member.roles.cache.has(role.id)) {
+        await interaction.member.roles.remove(role).catch(() => {});
+        return interaction.reply({ content: `➖ Cargo ${role} removido.`, ephemeral: true });
+      }
+      await interaction.member.roles.add(role).catch(() => {});
+      return interaction.reply({ content: `➕ Cargo ${role} adicionado.`, ephemeral: true });
+    }
 
     if (id.startsWith('feedback_')) return handleFeedback(interaction);
     if (id.startsWith('admin_stock') || id.startsWith('stock_')) return handleAdminStock(interaction);
