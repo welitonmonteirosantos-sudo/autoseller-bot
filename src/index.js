@@ -53,7 +53,6 @@ function isAdmin(member) {
 client.once("ready", () => {
   console.log(`AutoSeller online como ${client.user.tag}`);
 
-  // Produto inicial: 100 RAP
   if (!getProductByName("100 RAP")) {
     createProduct({
       name: "100 RAP",
@@ -63,7 +62,6 @@ client.once("ready", () => {
     });
   }
 
-  // Produto inicial: 1000 RAP
   if (!getProductByName("1000 RAP")) {
     createProduct({
       name: "1000 RAP",
@@ -167,8 +165,6 @@ client.on("messageCreate", async (message) => {
       })
       .setTimestamp();
 
-    // Quando configurarmos a URL do banner no Railway,
-    // ele aparecerá automaticamente no painel.
     if (process.env.PANEL_IMAGE_URL) {
       embed.setImage(process.env.PANEL_IMAGE_URL);
     }
@@ -277,10 +273,67 @@ client.on("messageCreate", async (message) => {
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
 
+  // ------------------------------
+  // BOTÃO COMPRAR
+  // ------------------------------
+
   if (interaction.customId === "buy_open") {
+    const product100 = getProductByName("100 RAP");
+    const product1000 = getProductByName("1000 RAP");
+
+    const button100 = new ButtonBuilder()
+      .setCustomId("buy_100")
+      .setLabel("100 RAP")
+      .setEmoji("💎")
+      .setStyle(ButtonStyle.Primary);
+
+    const button1000 = new ButtonBuilder()
+      .setCustomId("buy_1000")
+      .setLabel("1.000 RAP")
+      .setEmoji("💎")
+      .setStyle(ButtonStyle.Primary);
+
+    const row = new ActionRowBuilder().addComponents(
+      button100,
+      button1000
+    );
+
     return interaction.reply({
       content:
-        "🛒 O sistema de seleção de **100 RAP** e **1.000 RAP** será conectado neste botão na próxima etapa.",
+        "🛒 **Escolha o produto que deseja comprar:**\n\n" +
+        `💎 **100 RAP** — R$ ${product100.price
+          .toFixed(2)
+          .replace(".", ",")}\n` +
+        `💎 **1.000 RAP** — R$ ${product1000.price
+          .toFixed(2)
+          .replace(".", ",")}`,
+      components: [row],
+      ephemeral: true,
+    });
+  }
+
+  // ------------------------------
+  // ESCOLHA 100 RAP
+  // ------------------------------
+
+  if (interaction.customId === "buy_100") {
+    return interaction.reply({
+      content:
+        "💎 Você escolheu **100 RAP**.\n\n" +
+        "Na próxima etapa vamos adicionar a escolha de quantidade de **1 a 10**.",
+      ephemeral: true,
+    });
+  }
+
+  // ------------------------------
+  // ESCOLHA 1000 RAP
+  // ------------------------------
+
+  if (interaction.customId === "buy_1000") {
+    return interaction.reply({
+      content:
+        "💎 Você escolheu **1.000 RAP**.\n\n" +
+        "Na próxima etapa vamos adicionar a escolha de quantidade de **1 a 10**.",
       ephemeral: true,
     });
   }
