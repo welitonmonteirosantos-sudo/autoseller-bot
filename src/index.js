@@ -1,3 +1,4 @@
+const path = require('path');
 const {
   Client,
   GatewayIntentBits,
@@ -46,6 +47,7 @@ const CONFIG = {
     logs: '📋・logs',
     history: '📊・histórico',
     sales: '🛒・vendas',
+    commands: '📚・comandos',
   },
 };
 
@@ -191,36 +193,13 @@ async function setupDatabase() {
     );
   `);
 
-  // Migrações para bancos criados por versões anteriores do AutoSeller.
-  // CREATE TABLE IF NOT EXISTS não adiciona colunas novas em tabelas já existentes,
-  // então mantemos todas as evoluções de esquema aqui com ADD COLUMN IF NOT EXISTS.
-
-  await pool.query(`ALTER TABLE waitlist ADD COLUMN IF NOT EXISTS notified_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE waitlist ADD COLUMN IF NOT EXISTS opportunity_expires_at TIMESTAMPTZ`);
-
   await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS guild_id TEXT`);
   await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS subtotal NUMERIC(10,2)`);
   await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS discount NUMERIC(10,2) NOT NULL DEFAULT 0`);
-  await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS coupon_code TEXT`);
-  await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS ticket_id TEXT`);
-  await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'PENDING'`);
   await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ`);
-  await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ`);
-
-  await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS product_id TEXT`);
-  await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS max_uses INTEGER`);
-  await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS max_uses_per_user INTEGER NOT NULL DEFAULT 1`);
-  await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS used_count INTEGER NOT NULL DEFAULT 0`);
-  await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`);
-  await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE`);
   await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS created_by TEXT`);
-
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_waitlist_product_joined ON waitlist(product_id, joined_at, id)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_purchases_user_created ON purchases(user_id, created_at DESC)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_purchases_status ON purchases(status)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_history_created ON history(created_at DESC)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_logs_created ON admin_logs(created_at DESC)`);
 
   for (const p of Object.values(CONFIG.products)) {
     await pool.query(
@@ -639,6 +618,7 @@ async function ensureServerStructure(guild) {
   await ensureTextChannel(guild, CONFIG.channels.logs, adminCat, adminOverwrites);
   await ensureTextChannel(guild, CONFIG.channels.history, adminCat, adminOverwrites);
   await ensureTextChannel(guild, CONFIG.channels.sales, adminCat, adminOverwrites);
+  await ensureTextChannel(guild, CONFIG.channels.commands, adminCat, adminOverwrites);
 
   return { publicCat, adminCat, purchaseCat, supportCat };
 }
@@ -648,12 +628,58 @@ async function publishStaticPanels(guild) {
   if (supportCh) {
     const oldId = await getSetting(guild.id, 'support_panel_message_id');
     const payload = {
-      embeds: [new EmbedBuilder().setColor(CONFIG.brand.color).setTitle('🛠️ Suporte — Berovenda\'s').setDescription('Precisa de ajuda? Abra um ticket privado de suporte pelo botão abaixo.')],
-      components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('support_open').setLabel('Abrir suporte').setEmoji('🎫').setStyle(ButtonStyle.Danger))],
+      files: [{
+        attachment: path.join(__dirname, '..', 'kawai.png'),
+        name: 'kawai.png',
+      }],
+      embeds: [
+        new EmbedBuilder()
+          .setColor(CONFIG.brand.color)
+          .setTitle('🛠️ Suporte — Berovenda\'s')
+          .setDescription('Precisa de ajuda? Abra um ticket privado de suporte pelo botão abaixo.')
+          .setImage('attachment://kawai.png'),
+      ],
+      components: [
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId('support_open')
+            .setLabel('Abrir suporte')
+            .setEmoji('🎫')
+            .setStyle(ButtonStyle.Danger),
+        ),
+      ],
     };
     const old = oldId ? await supportCh.messages.fetch(oldId).catch(() => null) : null;
     const msg = old ? await old.edit(payload) : await supportCh.send(payload);
     await setSetting(guild.id, 'support_panel_message_id', msg.id);
+  }
+
+  const commandsCh = findChannel(guild, CONFIG.channels.commands);
+  if (commandsCh) {
+    const oldId = await getSetting(guild.id, 'commands_message_id');
+    const payload = {
+      embeds: [
+        new EmbedBuilder()
+          .setColor(CONFIG.brand.color)
+          .setTitle("📚 Berovenda's — Comandos")
+          .setDescription(
+            '**Comandos disponíveis**\n\n' +
+            '`+ping` — testa se o bot está online.\n' +
+            '`+setup` — verifica/cria a estrutura do servidor e atualiza os painéis. **DONO/ADMIN**\n' +
+            '`+painel` — atualiza/publica o painel de compras. **DONO/ADMIN**\n' +
+            '`+admin` — atualiza/publica o painel administrativo. **DONO/ADMIN**\n' +
+            '`+hs 10` — apaga a quantidade informada dos registros mais antigos do histórico comum. **DONO/ADMIN**\n' +
+            '`+excluir 1` até `+excluir 100` — apaga mensagens recentes do canal onde o comando foi usado. **DONO/ADMIN**\n\n' +
+            '🔒 Os logs administrativos continuam separados e protegidos do `+hs`.'
+          )
+          .setFooter({ text: "Berovenda's • Administração" })
+          .setTimestamp(),
+      ],
+    };
+
+    const old = oldId ? await commandsCh.messages.fetch(oldId).catch(() => null) : null;
+    const msg = old ? await old.edit(payload) : await commandsCh.send(payload);
+    await setSetting(guild.id, 'commands_message_id', msg.id);
   }
 
   const waitCh = findChannel(guild, CONFIG.channels.waitlist);
@@ -1204,6 +1230,42 @@ client.on('messageCreate', async (message) => {
       if (!m) return message.reply('❌ Canal administrativo não encontrado. Use `+setup`.');
       await adminLog(message.guild, message.author, 'PUBLISH_ADMIN_PANEL', { details: { channelId: m.channel.id, messageId: m.id } });
       return message.reply(`✅ Painel administrativo atualizado em ${m.channel}.`);
+    }
+
+    if (content.startsWith('+excluir')) {
+      if (!isAdmin(message.member)) return message.reply('❌ Sem permissão.');
+
+      const parts = content.split(/\s+/);
+      const amount = Number(parts[1]);
+
+      if (parts.length !== 2 || !Number.isInteger(amount) || amount < 1 || amount > 100) {
+        return message.reply('❌ Use: `+excluir 1` até `+excluir 100`');
+      }
+
+      if (typeof message.channel.bulkDelete !== 'function') {
+        return message.reply('❌ Este comando só pode ser usado em canais de texto compatíveis.');
+      }
+
+      await message.delete().catch(() => {});
+      const deleted = await message.channel.bulkDelete(amount, true);
+
+      await adminLog(message.guild, message.author, 'DELETE_MESSAGES', {
+        details: {
+          channelId: message.channel.id,
+          requested: amount,
+          deleted: deleted.size,
+        },
+      });
+
+      const confirmation = await message.channel.send(
+        `🗑️ **${deleted.size}** mensagem(ns) apagada(s).` +
+        (deleted.size < amount ? '\n⚠️ Algumas mensagens podem ter mais de 14 dias e não podem ser apagadas em massa pelo Discord.' : '')
+      ).catch(() => null);
+
+      if (confirmation) {
+        setTimeout(() => confirmation.delete().catch(() => {}), 4000);
+      }
+      return;
     }
 
     if (content.startsWith('+hs')) {
