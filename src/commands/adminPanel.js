@@ -12,12 +12,18 @@ const {
 } = require("../database/products");
 
 function money(value) {
-  return Number(value).toFixed(2).replace(".", ",");
+  return Number(value)
+    .toFixed(2)
+    .replace(".", ",");
 }
 
-function createAdminPanel() {
-  const rap100 = getProductById("rap_100");
-  const rap1000 = getProductById("rap_1000");
+async function createAdminPanel() {
+  const rap100 = await getProductById("rap_100");
+  const rap1000 = await getProductById("rap_1000");
+
+  if (!rap100 || !rap1000) {
+    throw new Error("Produtos principais não encontrados.");
+  }
 
   const embed = new EmbedBuilder()
     .setColor(config.brand.color)
@@ -106,9 +112,9 @@ async function publishAdminPanel(guild) {
     };
   }
 
-  const message = await channel.send(
-    createAdminPanel()
-  );
+  const panel = await createAdminPanel();
+
+  const message = await channel.send(panel);
 
   return {
     success: true,
