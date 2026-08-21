@@ -1,3 +1,5 @@
+const { pool } = require("../database/db");
+
 const {
   getProductById,
   removeStock,
@@ -16,6 +18,45 @@ const {
 const {
   createPurchaseTicket,
 } = require("./tickets");
+
+async function savePurchase({
+  user,
+  product,
+  quantity,
+  total,
+  ticketId,
+}) {
+  const result = await pool.query(
+    `
+      INSERT INTO purchases (
+        user_id,
+        username,
+        product_id,
+        product_name,
+        quantity,
+        unit_price,
+        total,
+        ticket_id,
+        status
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      RETURNING *
+    `,
+    [
+      user.id,
+      user.username,
+      product.id,
+      product.name,
+      quantity,
+      product.price,
+      total,
+      ticketId,
+      "PENDING",
+    ]
+  );
+
+  return result.rows[0];
+}
 
 async function processPurchase({
   guild,
@@ -84,15 +125,59 @@ async function processPurchase({
 
   const updatedProduct = stockResult.product;
 
-  const ticket = await createPurchaseTicket({
-    guild,
-    user,
-    product: updatedProduct,
-    quantity: finalQuantity,
-    total,
-  });
+  let ticket;
 
-  addHistory({
+  try {
+    ticket = await createPurchaseTicket({
+      guild,
+      user,
+      product: updatedProduct,
+      quantity: finalQuantity,
+      total,
+    });
+  } catch (error) {
+    console.error("Erro ao criar ticket:", error);
+
+    await pool.query(
+      `
+        UPDATE products
+        SET
+          stock = stock + $2,
+          updated_at = NOW()
+        WHERE id = $1
+      `,
+      [productId, finalQuantity]
+    );
+
+    return {
+      success: false,
+      reason: "TICKET_CREATION_ERROR",
+    };
+  }
+
+  let purchase;
+
+  try {
+    purchase = await savePurchase({
+      user,
+      product: updatedProduct,
+      quantity: finalQuantity,
+      total,
+      ticketId: ticket.id,
+    });
+  } catch (error) {
+    console.error(
+      "Erro ao salvar compra no PostgreSQL:",
+      error
+    );
+
+    return {
+      success: false,
+      reason: "PURCHASE_SAVE_ERROR",
+    };
+  }
+
+  await addHistory({
     type: "PURCHASE",
     userId: user.id,
     username: user.username,
@@ -100,27 +185,36 @@ async function processPurchase({
     productName: updatedProduct.name,
     quantity: finalQuantity,
     details: {
+      purchaseId: purchase.id,
       requestedQuantity,
       adjusted: finalQuantity !== requestedQuantity,
+      unitPrice: updatedProduct.price,
       total,
       ticketId: ticket.id,
       oldStock: stockResult.oldStock,
       newStock: stockResult.newStock,
+      status: "PENDING",
     },
   });
 
   let removedFromWaitlist = false;
 
-  if (isInWaitlist(productId, user.id)) {
-    const waitlistResult = removeAfterPurchase(
-      productId,
-      user.id
-    );
+  const waiting = await isInWaitlist(
+    productId,
+    user.id
+  );
+
+  if (waiting) {
+    const waitlistResult =
+      await removeAfterPurchase(
+        productId,
+        user.id
+      );
 
     if (waitlistResult.success) {
       removedFromWaitlist = true;
 
-      addHistory({
+      await addHistory({
         type: "WAITLIST_REMOVED",
         userId: user.id,
         username: user.username,
@@ -128,6 +222,7 @@ async function processPurchase({
         productName: updatedProduct.name,
         details: {
           reason: "PURCHASE_COMPLETED",
+          purchaseId: purchase.id,
         },
       });
     }
@@ -135,13 +230,16 @@ async function processPurchase({
 
   return {
     success: true,
+    purchaseId: Number(purchase.id),
     product: updatedProduct,
     requestedQuantity,
     quantity: finalQuantity,
-    adjusted: finalQuantity !== requestedQuantity,
+    adjusted:
+      finalQuantity !== requestedQuantity,
     total,
     ticket,
     removedFromWaitlist,
+    status: "PENDING",
   };
 }
 
