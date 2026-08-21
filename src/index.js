@@ -397,6 +397,52 @@ async function setupDatabase() {
   await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS roblox_username TEXT`);
   await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS purchase_type TEXT NOT NULL DEFAULT 'RAP'`);
   await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS steam_account_id BIGINT`);
+  await pool.query(`ALTER TABLE steam_accounts ADD COLUMN IF NOT EXISTS stock INTEGER NOT NULL DEFAULT 1`);
+
+  const duplicatedSteam = await pool.query(`
+    SELECT
+      guild_id,
+      LOWER(game_title) AS game_key,
+      price,
+      LOWER(username) AS username_key,
+      COALESCE(description, '') AS description_key,
+      ARRAY_AGG(id ORDER BY id) AS ids,
+      SUM(stock)::int AS total_stock
+    FROM steam_accounts
+    WHERE status IN ('AVAILABLE','OUT_OF_STOCK')
+    GROUP BY
+      guild_id,
+      LOWER(game_title),
+      price,
+      LOWER(username),
+      COALESCE(description, '')
+    HAVING COUNT(*) > 1
+  `);
+
+  for (const group of duplicatedSteam.rows) {
+    const ids = group.ids.map(Number);
+    const keeper = ids[0];
+    const duplicates = ids.slice(1);
+
+    await pool.query(
+      `UPDATE steam_accounts
+       SET stock=$2,
+           status=CASE
+             WHEN $2 > 0 THEN 'AVAILABLE'
+             ELSE 'OUT_OF_STOCK'
+           END
+       WHERE id=$1`,
+      [keeper, Number(group.total_stock)]
+    );
+
+    if (duplicates.length) {
+      await pool.query(
+        `DELETE FROM steam_accounts
+         WHERE id = ANY($1::bigint[])`,
+        [duplicates]
+      );
+    }
+  }
 
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_steam_available ON steam_accounts(guild_id,status,created_at)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_trades_active ON trades(guild_id,status,expires_at)`);
@@ -1973,8 +2019,135 @@ async function handleAdminSteam(interaction) {
     await publishStaticPanels(interaction.guild);
     return interaction.reply({ content: `✅ Conta Steam adicionada ao estoque: **${game}** — ${money(price)}.`, ephemeral: true });
   }
+  if (id === 'steam_admin_stock') {
+    const rows = (await pool.query(
+      `SELECT id,game_title,stock
+       FROM steam_accounts
+       WHERE guild_id=$1
+         AND status IN ('AVAILABLE','OUT_OF_STOCK')
+       ORDER BY game_title ASC
+       LIMIT 25`,
+      [interaction.guild.id]
+    )).rows;
+
+    if (!rows.length) {
+      return interaction.reply({
+        content: '❌ Nenhum produto Steam cadastrado.',
+        ephemeral: true,
+      });
+    }
+
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId('steam_admin_stock_select')
+      .setPlaceholder('Escolha o produto')
+      .addOptions(rows.map((x) => ({
+        label: x.game_title.slice(0, 100),
+        description: `Estoque atual: ${x.stock}`,
+        value: String(x.id),
+      })));
+
+    return interaction.reply({
+      content: '📦 Escolha o produto:',
+      components: [new ActionRowBuilder().addComponents(menu)],
+      ephemeral: true,
+    });
+  }
+
+  if (interaction.isStringSelectMenu() && id === 'steam_admin_stock_select') {
+    const accountId = Number(interaction.values[0]);
+
+    const product = (await pool.query(
+      `SELECT id,game_title,stock
+       FROM steam_accounts
+       WHERE id=$1 AND guild_id=$2`,
+      [accountId, interaction.guild.id]
+    )).rows[0];
+
+    if (!product) {
+      return interaction.update({
+        content: '❌ Produto não encontrado.',
+        components: [],
+      });
+    }
+
+    const modal = new ModalBuilder()
+      .setCustomId(`steam_admin_stock_modal:${accountId}`)
+      .setTitle(`Estoque • ${product.game_title}`.slice(0, 45));
+
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('stock')
+          .setLabel(`Estoque atual: ${product.stock}`.slice(0, 45))
+          .setPlaceholder('Exemplo: 20')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      )
+    );
+
+    return interaction.showModal(modal);
+  }
+
+  if (interaction.isModalSubmit() && id.startsWith('steam_admin_stock_modal:')) {
+    const accountId = Number(id.split(':')[1]);
+    const stock = Number(interaction.fields.getTextInputValue('stock'));
+
+    if (!Number.isInteger(stock) || stock < 0) {
+      return interaction.reply({
+        content: '❌ Informe uma quantidade inteira maior ou igual a 0.',
+        ephemeral: true,
+      });
+    }
+
+    const before = (await pool.query(
+      `SELECT * FROM steam_accounts
+       WHERE id=$1 AND guild_id=$2`,
+      [accountId, interaction.guild.id]
+    )).rows[0];
+
+    if (!before) {
+      return interaction.reply({
+        content: '❌ Produto não encontrado.',
+        ephemeral: true,
+      });
+    }
+
+    await pool.query(
+      `UPDATE steam_accounts
+       SET stock=$2,
+           status=CASE
+             WHEN $2 > 0 THEN 'AVAILABLE'
+             ELSE 'OUT_OF_STOCK'
+           END
+       WHERE id=$1`,
+      [accountId, stock]
+    );
+
+    await adminLog(
+      interaction.guild,
+      interaction.user,
+      'SET_STEAM_STOCK',
+      {
+        details: {
+          steamAccountId: accountId,
+          game: before.game_title,
+          oldStock: Number(before.stock),
+          newStock: stock,
+        },
+      },
+    );
+
+    return interaction.reply({
+      content:
+        `✅ Estoque de **${before.game_title}** atualizado.
+` +
+        `📦 **${before.stock} → ${stock}**`,
+      ephemeral: true,
+    });
+  }
+
   if (id === 'steam_admin_list') {
-    const rows = (await pool.query(`SELECT id,game_title,price,status,description FROM steam_accounts WHERE guild_id=$1 ORDER BY created_at DESC LIMIT 20`, [interaction.guild.id])).rows;
+    const rows = (await pool.query(`SELECT id,game_title,price,stock,status,description FROM steam_accounts WHERE guild_id=$1 ORDER BY created_at DESC LIMIT 20`, [interaction.guild.id])).rows;
     const text = rows.length ? rows.map((x) => `• **#${x.id} ${x.game_title}** — ${money(x.price)} — **${x.status}**${x.description ? ` — ${x.description}` : ''}`).join('\n') : 'Nenhuma conta cadastrada.';
     return interaction.reply({ content: `🎮 **Estoque Steam**\n\n${text}`, ephemeral: true });
   }
@@ -1986,12 +2159,24 @@ async function createSteamPurchase(interaction, accountId) {
   try {
     await db.query('BEGIN');
     const aRes = await db.query(`SELECT * FROM steam_accounts WHERE id=$1 AND guild_id=$2 FOR UPDATE`, [accountId, interaction.guild.id]);
-    if (!aRes.rowCount || aRes.rows[0].status !== 'AVAILABLE') {
+    if (!aRes.rowCount || aRes.rows[0].status !== 'AVAILABLE' || Number(aRes.rows[0].stock) <= 0) {
       await db.query('ROLLBACK');
       return { success: false, reason: 'UNAVAILABLE' };
     }
+
     const a = aRes.rows[0];
-    await db.query(`UPDATE steam_accounts SET status='RESERVED',reserved_by=$2,reserved_at=NOW() WHERE id=$1`, [accountId, interaction.user.id]);
+    const newStock = Number(a.stock) - 1;
+
+    await db.query(
+      `UPDATE steam_accounts
+       SET stock=$2,
+           status=CASE
+             WHEN $2 > 0 THEN 'AVAILABLE'
+             ELSE 'OUT_OF_STOCK'
+           END
+       WHERE id=$1`,
+      [accountId, newStock]
+    );
     const pRes = await db.query(
       `INSERT INTO purchases(guild_id,user_id,username,product_id,product_name,quantity,unit_price,subtotal,discount,total,status,purchase_type,steam_account_id)
        VALUES($1,$2,$3,'steam',$4,1,$5,$5,0,$5,'PENDING','STEAM',$6) RETURNING *`,
@@ -2028,7 +2213,15 @@ async function createSteamPurchase(interaction, accountId) {
     return { success: true, purchase, ticket };
   } catch (e) {
     try { await db.query('ROLLBACK'); } catch {}
-    if (purchase?.steam_account_id) await pool.query(`UPDATE steam_accounts SET status='AVAILABLE',reserved_by=NULL,reserved_at=NULL WHERE id=$1`, [purchase.steam_account_id]).catch(() => {});
+    if (purchase?.steam_account_id) {
+      await pool.query(
+        `UPDATE steam_accounts
+         SET stock=stock+1,
+             status='AVAILABLE'
+         WHERE id=$1`,
+        [purchase.steam_account_id]
+      ).catch(() => {});
+    }
     throw e;
   } finally {
     db.release();
@@ -2061,7 +2254,13 @@ async function deliverSteamPurchase(guild, purchase) {
   }).catch(() => null);
   if (!dm) return { success: false, reason: 'DM_CLOSED' };
 
-  await pool.query(`UPDATE steam_accounts SET status='SOLD',buyer_user_id=$2,sold_at=NOW() WHERE id=$1`, [a.id, purchase.user_id]);
+  await pool.query(
+    `UPDATE steam_accounts
+     SET buyer_user_id=$2,
+         sold_at=NOW()
+     WHERE id=$1`,
+    [a.id, purchase.user_id]
+  );
   const r = await pool.query(`UPDATE purchases SET status='COMPLETED',completed_at=NOW() WHERE id=$1 RETURNING *`, [purchase.id]);
   await recordSaleRevenue(r.rows[0]);
   const member = await guild.members.fetch(purchase.user_id).catch(() => null);
@@ -2082,21 +2281,21 @@ async function deliverSteamPurchase(guild, purchase) {
 async function handleSteamStore(interaction) {
   const id = interaction.customId || '';
   if (id === 'steam_browse') {
-    const rows = (await pool.query(`SELECT id,game_title,price,description FROM steam_accounts WHERE guild_id=$1 AND status='AVAILABLE' ORDER BY created_at ASC LIMIT 25`, [interaction.guild.id])).rows;
+    const rows = (await pool.query(`SELECT id,game_title,price,description,stock FROM steam_accounts WHERE guild_id=$1 AND status='AVAILABLE' AND stock > 0 ORDER BY created_at ASC LIMIT 25`, [interaction.guild.id])).rows;
     if (!rows.length) return interaction.reply({ content: '🔴 Não há contas Steam disponíveis no momento.', ephemeral: true });
     const menu = new StringSelectMenuBuilder()
       .setCustomId('steam_select')
       .setPlaceholder('Escolha uma conta / jogo')
       .addOptions(rows.map((x) => ({
         label: `${x.game_title}`.slice(0, 100),
-        description: `${money(x.price)}${x.description ? ` • ${x.description}` : ''}`.slice(0, 100),
+        description: `${money(x.price)} • 📦 ${x.stock} disponíveis`.slice(0, 100),
         value: String(x.id),
       })));
     return interaction.reply({ content: '🎮 Escolha uma opção:', components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
   }
   if (interaction.isStringSelectMenu() && id === 'steam_select') {
     const accountId = Number(interaction.values[0]);
-    const a = (await pool.query(`SELECT id,game_title,price,description FROM steam_accounts WHERE id=$1 AND guild_id=$2 AND status='AVAILABLE'`, [accountId, interaction.guild.id])).rows[0];
+    const a = (await pool.query(`SELECT id,game_title,price,description,stock FROM steam_accounts WHERE id=$1 AND guild_id=$2 AND status='AVAILABLE' AND stock > 0`, [accountId, interaction.guild.id])).rows[0];
     if (!a) return interaction.update({ content: '❌ Essa conta não está mais disponível.', components: [] });
     return interaction.update({
       content: `🎮 **${a.game_title}**\n💰 **${money(a.price)}**\n📝 ${a.description || 'Sem descrição.'}\n\nApós confirmação de pagamento, usuário e senha serão enviados automaticamente por DM.`,
