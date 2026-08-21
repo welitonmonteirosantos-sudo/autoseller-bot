@@ -12,12 +12,31 @@ const {
   processPurchase,
 } = require("../services/purchase");
 
+const {
+  handleAdminStockInteraction,
+} = require("./adminStock");
+
 async function handleInteraction(interaction) {
+  const customId = interaction.customId;
+
+  // ==============================
+  // PAINEL ADMIN — ESTOQUE
+  // ==============================
+
+  if (
+    customId === "admin_stock" ||
+    customId.startsWith("admin_stock_product:") ||
+    customId.startsWith("admin_stock_add:") ||
+    customId.startsWith("admin_stock_set:") ||
+    customId.startsWith("admin_stock_modal:")
+  ) {
+    return handleAdminStockInteraction(interaction);
+  }
+
+  // Daqui para baixo são botões de compra.
   if (!interaction.isButton()) {
     return;
   }
-
-  const customId = interaction.customId;
 
   // ==============================
   // ABRIR COMPRA
@@ -43,13 +62,14 @@ async function handleInteraction(interaction) {
         return interaction.update({
           content:
             `🔴 **${result.product.name} está sem estoque.**\n\n` +
-            "A lista de espera será conectada a esse fluxo na próxima etapa.",
+            "A lista de espera será conectada a esse fluxo.",
           components: [],
         });
       }
 
       return interaction.update({
-        content: "❌ Não foi possível abrir esse produto.",
+        content:
+          "❌ Não foi possível abrir esse produto.",
         components: [],
       });
     }
@@ -114,7 +134,7 @@ async function handleInteraction(interaction) {
   }
 
   // ==============================
-  // BOTÃO CENTRAL DA QUANTIDADE
+  // QUANTIDADE ATUAL
   // ==============================
 
   if (customId.startsWith("qty_current:")) {
@@ -142,8 +162,7 @@ async function handleInteraction(interaction) {
       if (result.reason === "OUT_OF_STOCK") {
         return interaction.editReply({
           content:
-            "🔴 **O produto acabou antes da confirmação.**\n\n" +
-            "A lista de espera será conectada na próxima etapa.",
+            "🔴 **O produto acabou antes da confirmação.**",
           components: [],
         });
       }
