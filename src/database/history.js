@@ -1,9 +1,23 @@
 const history = [];
 
-function addHistory(data) {
+function addHistory({
+  type,
+  userId = null,
+  username = null,
+  productId = null,
+  productName = null,
+  quantity = null,
+  details = null,
+}) {
   const entry = {
-    id: Date.now(),
-    ...data,
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type,
+    userId,
+    username,
+    productId,
+    productName,
+    quantity,
+    details,
     createdAt: new Date().toISOString(),
   };
 
@@ -13,7 +27,12 @@ function addHistory(data) {
 }
 
 function getHistory() {
+  // Mais recentes primeiro
   return [...history].reverse();
+}
+
+function getHistoryCount() {
+  return history.length;
 }
 
 function removeOldest(amount) {
@@ -23,20 +42,43 @@ function removeOldest(amount) {
     return 0;
   }
 
-  const removed = Math.min(quantity, history.length);
+  const totalToRemove = Math.min(
+    quantity,
+    history.length
+  );
 
-  history.splice(0, removed);
+  // O array original guarda os mais antigos no início.
+  history.splice(0, totalToRemove);
 
-  return removed;
+  return totalToRemove;
 }
 
-function getHistoryCount() {
-  return history.length;
+function filterHistory({
+  type = null,
+  userId = null,
+  productId = null,
+} = {}) {
+  return getHistory().filter((entry) => {
+    if (type && entry.type !== type) {
+      return false;
+    }
+
+    if (userId && entry.userId !== userId) {
+      return false;
+    }
+
+    if (productId && entry.productId !== productId) {
+      return false;
+    }
+
+    return true;
+  });
 }
 
 module.exports = {
   addHistory,
   getHistory,
-  removeOldest,
   getHistoryCount,
+  removeOldest,
+  filterHistory,
 };
