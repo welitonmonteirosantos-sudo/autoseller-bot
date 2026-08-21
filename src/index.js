@@ -358,9 +358,13 @@ async function createPurchasePanel() {
     )
     .setFooter({ text: "Berovenda's • Blade Ball RAP" })
     .setTimestamp();
-  if (process.env.PANEL_IMAGE_URL) embed.setImage(process.env.PANEL_IMAGE_URL);
+  embed.setImage('attachment://vendarapdis.png');
   return {
     embeds: [embed],
+    files: [{
+      attachment: path.join(__dirname, '..', 'vendarapdis.png'),
+      name: 'vendarapdis.png',
+    }],
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('buy_open').setLabel('Comprar').setEmoji('🛒').setStyle(ButtonStyle.Danger),
