@@ -11,8 +11,10 @@ const {
   TextInputStyle,
   ChannelType,
   PermissionFlagsBits,
+  StringSelectMenuBuilder,
 } = require('discord.js');
 const { Pool } = require('pg');
+const crypto = require('crypto');
 
 const CONFIG = {
   brand: { name: "Berovenda's", color: 0xed1c24 },
@@ -36,6 +38,7 @@ const CONFIG = {
     female: '♀️・Mulher',
     adult: '🔞・+18',
     minor: '🧸・-18',
+    lucky: '🍀・Sortudo',
   },
   categories: {
     public: 'AUTSELLER',
@@ -43,6 +46,7 @@ const CONFIG = {
     purchases: '🛒 COMPRAS',
     support: '🛠️ SUPORTE',
     entry: '🚪 ENTRADA',
+    trades: '🔄 TROCAS',
   },
   channels: {
     announcements: '📢・avisos',
@@ -61,6 +65,12 @@ const CONFIG = {
     verification: '✅・verificação',
     selfRoles: '🎭・escolha-seus-cargos',
     inactive: '🌧️・inativos',
+    general: '💬・geral',
+    steam: '🎮・steam',
+    revenue: '💰・arrecadação',
+    adminManual: '📘・manual-dos-adms',
+    giveaways: '🎉・sorteios',
+    trades: '🔄・trocas',
   },
 };
 
@@ -89,6 +99,7 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildPresences,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
@@ -97,6 +108,7 @@ const client = new Client({
 const waitlistTimers = new Map();
 const money = (v) => `R$ ${Number(v).toFixed(2).replace('.', ',')}`;
 const isAdmin = (member) => member?.roles?.cache?.some((r) => [CONFIG.roles.owner, CONFIG.roles.admin].includes(r.name));
+const isOwner = (member) => member?.roles?.cache?.some((r) => r.name === CONFIG.roles.owner);
 const findChannel = (guild, name) => guild.channels.cache.find((c) => c.name === name);
 const findRole = (guild, name) => guild.roles.cache.find((r) => r.name === name);
 const unix = (d = new Date()) => Math.floor(new Date(d).getTime() / 1000);
@@ -239,6 +251,120 @@ async function setupDatabase() {
       depressed_applied_at TIMESTAMPTZ,
       PRIMARY KEY(guild_id, user_id)
     );
+
+    CREATE TABLE IF NOT EXISTS steam_accounts (
+      id BIGSERIAL PRIMARY KEY,
+      guild_id TEXT NOT NULL,
+      game_title TEXT NOT NULL,
+      price NUMERIC(10,2) NOT NULL,
+      username TEXT NOT NULL,
+      password_encrypted TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL DEFAULT 'AVAILABLE',
+      added_by TEXT NOT NULL,
+      reserved_by TEXT,
+      buyer_user_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      reserved_at TIMESTAMPTZ,
+      sold_at TIMESTAMPTZ
+    );
+
+    CREATE TABLE IF NOT EXISTS revenue_ledger (
+      id BIGSERIAL PRIMARY KEY,
+      guild_id TEXT NOT NULL,
+      entry_type TEXT NOT NULL,
+      amount NUMERIC(10,2) NOT NULL,
+      purchase_id BIGINT,
+      mediator_user_id TEXT,
+      details JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(entry_type, purchase_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS giveaways (
+      id BIGSERIAL PRIMARY KEY,
+      guild_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      prize TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'ACTIVE',
+      created_by TEXT NOT NULL,
+      channel_id TEXT,
+      message_id TEXT,
+      ends_at TIMESTAMPTZ,
+      winner_user_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      drawn_at TIMESTAMPTZ
+    );
+
+    CREATE TABLE IF NOT EXISTS giveaway_entries (
+      giveaway_id BIGINT NOT NULL,
+      user_id TEXT NOT NULL,
+      joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY(giveaway_id, user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS trades (
+      id BIGSERIAL PRIMARY KEY,
+      guild_id TEXT NOT NULL,
+      advertiser_id TEXT NOT NULL,
+      advertiser_name TEXT NOT NULL,
+      offer_text TEXT NOT NULL,
+      want_text TEXT NOT NULL,
+      description TEXT,
+      image_url TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'ACTIVE',
+      channel_id TEXT,
+      message_id TEXT,
+      accepted_offer_id BIGINT,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      closed_at TIMESTAMPTZ
+    );
+
+    CREATE TABLE IF NOT EXISTS trade_offers (
+      id BIGSERIAL PRIMARY KEY,
+      trade_id BIGINT NOT NULL,
+      offerer_id TEXT NOT NULL,
+      offerer_name TEXT NOT NULL,
+      description TEXT,
+      image_url TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'PENDING',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      responded_at TIMESTAMPTZ
+    );
+
+    CREATE TABLE IF NOT EXISTS trade_drafts (
+      channel_id TEXT PRIMARY KEY,
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      stage TEXT NOT NULL,
+      trade_id BIGINT,
+      payload JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS trade_tickets (
+      trade_id BIGINT PRIMARY KEY,
+      guild_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      advertiser_id TEXT NOT NULL,
+      offerer_id TEXT NOT NULL,
+      mediator_user_id TEXT,
+      mediation_fee NUMERIC(10,2) NOT NULL DEFAULT 10,
+      mediation_paid BOOLEAN NOT NULL DEFAULT FALSE,
+      risk_accepted BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      closed_at TIMESTAMPTZ
+    );
+
+    CREATE TABLE IF NOT EXISTS mediation_earnings (
+      id BIGSERIAL PRIMARY KEY,
+      trade_id BIGINT UNIQUE NOT NULL,
+      guild_id TEXT NOT NULL,
+      mediator_user_id TEXT NOT NULL,
+      amount NUMERIC(10,2) NOT NULL DEFAULT 10,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
   `);
 
   await pool.query(`ALTER TABLE waitlist ADD COLUMN IF NOT EXISTS notified_at TIMESTAMPTZ`);
@@ -259,6 +385,18 @@ async function setupDatabase() {
   await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE`);
   await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS created_by TEXT`);
+  await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS owner_user_id TEXT`);
+  await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS source TEXT`);
+
+  await pool.query(`ALTER TABLE carts ADD COLUMN IF NOT EXISTS roblox_username TEXT`);
+
+  await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS roblox_username TEXT`);
+  await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS purchase_type TEXT NOT NULL DEFAULT 'RAP'`);
+  await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS steam_account_id BIGINT`);
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_steam_available ON steam_accounts(guild_id,status,created_at)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_trades_active ON trades(guild_id,status,expires_at)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_giveaways_active ON giveaways(guild_id,status,ends_at)`);
 
   for (const p of Object.values(CONFIG.products)) {
     await pool.query(
@@ -399,7 +537,10 @@ async function createAdminPanel() {
       ),
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('admin_orders').setLabel('Pedidos').setEmoji('🛒').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('admin_refresh').setLabel('Atualizar painéis').setEmoji('🔄').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('admin_steam').setLabel('Steam').setEmoji('🎮').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('admin_revenue').setLabel('Arrecadação').setEmoji('💰').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('admin_giveaways').setLabel('Sorteios').setEmoji('🎉').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('admin_refresh').setLabel('Atualizar').setEmoji('🔄').setStyle(ButtonStyle.Secondary),
       ),
     ],
   };
@@ -461,6 +602,7 @@ async function validateCoupon(code, userId, productId, subtotal) {
   const r = await pool.query('SELECT * FROM coupons WHERE code=$1 LIMIT 1', [normalized]);
   const c = r.rows[0];
   if (!c || !c.active) return { valid: false, reason: 'Cupom inexistente ou inativo.' };
+  if (c.owner_user_id && c.owner_user_id !== userId) return { valid: false, reason: 'Este cupom pertence a outro cliente.' };
   if (c.expires_at && new Date(c.expires_at) <= new Date()) return { valid: false, reason: 'Cupom expirado.' };
   if (c.product_id && c.product_id !== productId) return { valid: false, reason: 'Cupom não é válido para este produto.' };
   if (c.max_uses != null && Number(c.used_count) >= Number(c.max_uses)) return { valid: false, reason: 'Cupom atingiu o limite total de usos.' };
@@ -492,6 +634,7 @@ async function cartMessage(guildId, userId) {
       `💰 Preço unitário: **${money(p.price)}**\n` +
       `🔢 Quantidade: **${q}**\n` +
       `📦 Estoque atual: **${p.stock}**\n` +
+      `🎮 Roblox: **${cart.roblox_username || 'não informado'}**\n` +
       `${couponText}\n` +
       `💵 Total: **${money(total)}**\n\n` +
       `Escolha de **1 a 10 unidades**. Se a quantidade for maior que o estoque no momento da confirmação, o pedido será ajustado ao estoque disponível.`,
@@ -502,6 +645,7 @@ async function cartMessage(guildId, userId) {
         new ButtonBuilder().setCustomId('cart_inc').setLabel('+').setStyle(ButtonStyle.Secondary).setDisabled(q >= CONFIG.maxQuantity),
       ),
       new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('cart_roblox').setLabel('Usuário Roblox').setEmoji('🎮').setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId('cart_coupon').setLabel('Aplicar cupom').setEmoji('🎟️').setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId('cart_coupon_remove').setLabel('Remover cupom').setStyle(ButtonStyle.Secondary).setDisabled(!cart.coupon_code),
         new ButtonBuilder().setCustomId('cart_confirm').setLabel('Confirmar compra').setEmoji('🛒').setStyle(ButtonStyle.Danger),
@@ -733,6 +877,7 @@ async function ensureServerStructure(guild) {
   await ensureRole(guild, CONFIG.roles.female, 0xff69b4);
   await ensureRole(guild, CONFIG.roles.adult, 0xed1c24);
   await ensureRole(guild, CONFIG.roles.minor, 0xffffff);
+  await ensureRole(guild, CONFIG.roles.lucky, 0x57f287);
   for (const item of SELF_ROLES) await ensureRole(guild, item.name, 0x2b2d31);
 
   const adminAllow = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.AttachFiles];
@@ -762,6 +907,11 @@ async function ensureServerStructure(guild) {
   const adminCat = await ensureCategory(guild, CONFIG.categories.admin, adminOverwrites);
   const purchaseCat = await ensureCategory(guild, CONFIG.categories.purchases, [{ id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] }]);
   const supportCat = await ensureCategory(guild, CONFIG.categories.support, [{ id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] }]);
+  const tradeCat = await ensureCategory(guild, CONFIG.categories.trades, [
+    { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+    { id: adminRole.id, deny: [PermissionFlagsBits.ViewChannel] },
+    { id: ownerRole.id, allow: adminAllow },
+  ]);
 
   await ensureTextChannel(guild, CONFIG.channels.welcome, entryCat, entryOverwrites);
   await ensureTextChannel(guild, CONFIG.channels.terms, entryCat, entryOverwrites);
@@ -773,6 +923,10 @@ async function ensureServerStructure(guild) {
   await ensureTextChannel(guild, CONFIG.channels.waitlist, publicCat);
   await ensureTextChannel(guild, CONFIG.channels.selfRoles, publicCat);
   await ensureTextChannel(guild, CONFIG.channels.inactive, publicCat);
+  await ensureTextChannel(guild, CONFIG.channels.general, publicCat);
+  await ensureTextChannel(guild, CONFIG.channels.steam, publicCat);
+  await ensureTextChannel(guild, CONFIG.channels.giveaways, publicCat);
+  await ensureTextChannel(guild, CONFIG.channels.trades, publicCat);
 
   const feedbackOverwrites = [
     { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
@@ -787,9 +941,11 @@ async function ensureServerStructure(guild) {
   await ensureTextChannel(guild, CONFIG.channels.logs, adminCat, adminOverwrites);
   await ensureTextChannel(guild, CONFIG.channels.history, adminCat, adminOverwrites);
   await ensureTextChannel(guild, CONFIG.channels.sales, adminCat, adminOverwrites);
+  await ensureTextChannel(guild, CONFIG.channels.revenue, adminCat, adminOverwrites);
+  await ensureTextChannel(guild, CONFIG.channels.adminManual, adminCat, adminOverwrites);
 
   await seedMemberActivity(guild);
-  return { entryCat, publicCat, adminCat, purchaseCat, supportCat, verifiedRole, visitorRole };
+  return { entryCat, publicCat, adminCat, purchaseCat, supportCat, tradeCat, verifiedRole, visitorRole };
 }
 
 async function publishStaticPanels(guild) {
@@ -799,7 +955,10 @@ async function publishStaticPanels(guild) {
     const payload = {
       files: [{ attachment: path.join(__dirname, '..', 'kawai.png'), name: 'kawai.png' }],
       embeds: [new EmbedBuilder().setColor(CONFIG.brand.color).setTitle('🛠️ Suporte — Berovenda\'s').setDescription('Precisa de ajuda? Abra um ticket privado de suporte pelo botão abaixo.').setImage('attachment://kawai.png')],
-      components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('support_open').setLabel('Abrir suporte').setEmoji('🎫').setStyle(ButtonStyle.Danger))],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('support_open').setLabel('Abrir suporte').setEmoji('🎫').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('game_order_open').setLabel('Encomendar jogo').setEmoji('🎮').setStyle(ButtonStyle.Secondary),
+      )],
     };
     const old = oldId ? await supportCh.messages.fetch(oldId).catch(() => null) : null;
     const msg = old ? await old.edit(payload) : await supportCh.send(payload);
@@ -880,11 +1039,117 @@ async function publishStaticPanels(guild) {
       '`+painel` — atualiza o painel de compras.\n' +
       '`+admin` — atualiza o painel administrativo.\n' +
       '`+hs 10` — apaga 10 registros mais antigos do histórico comum.\n' +
-      '`+excluir 1` até `+excluir 100` — apaga mensagens recentes do canal atual.\n\n🔒 Comandos administrativos: **DONO/ADMIN**.'
+      '`+excluir 1` até `+excluir 100` — apaga mensagens recentes do canal atual.\n' +
+      '`+setup` também publica Steam, sorteios, trocas, manual de ADMs e arrecadação.\n\n🔒 Comandos administrativos: **DONO/ADMIN**.'
     ).setTimestamp()] };
     const old = oldId ? await commandsCh.messages.fetch(oldId).catch(() => null) : null;
     const msg = old ? await old.edit(payload) : await commandsCh.send(payload);
     await setSetting(guild.id, 'commands_message_id', msg.id);
+  }
+
+
+  const steamCh = findChannel(guild, CONFIG.channels.steam);
+  if (steamCh) {
+    const oldId = await getSetting(guild.id, 'steam_panel_message_id');
+    const payload = {
+      embeds: [new EmbedBuilder()
+        .setColor(CONFIG.brand.color)
+        .setTitle("🎮 Berovenda's — Contas Steam")
+        .setDescription('Contas Steam compartilhadas disponíveis para entrega automática após a confirmação do pagamento.\n\nAs credenciais ficam protegidas e só são enviadas ao comprador.')],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('steam_browse').setLabel('Ver contas disponíveis').setEmoji('🎮').setStyle(ButtonStyle.Danger),
+      )],
+    };
+    const old = oldId ? await steamCh.messages.fetch(oldId).catch(() => null) : null;
+    const msg = old ? await old.edit(payload) : await steamCh.send(payload);
+    await setSetting(guild.id, 'steam_panel_message_id', msg.id);
+  }
+
+  const giveawayCh = findChannel(guild, CONFIG.channels.giveaways);
+  if (giveawayCh) {
+    const oldId = await getSetting(guild.id, 'giveaway_panel_message_id');
+    const payload = {
+      embeds: [new EmbedBuilder()
+        .setColor(CONFIG.brand.color)
+        .setTitle('🎉 Sorteios — Berovenda\'s')
+        .setDescription('Os sorteios ativos aparecem neste canal. Clique em **Participar** no sorteio desejado. O vencedor recebe automaticamente o cargo **🍀・Sortudo**.')],
+    };
+    const old = oldId ? await giveawayCh.messages.fetch(oldId).catch(() => null) : null;
+    const msg = old ? await old.edit(payload) : await giveawayCh.send(payload);
+    await setSetting(guild.id, 'giveaway_panel_message_id', msg.id);
+  }
+
+  const tradesCh = findChannel(guild, CONFIG.channels.trades);
+  if (tradesCh) {
+    const oldId = await getSetting(guild.id, 'trades_panel_message_id');
+    const payload = {
+      embeds: [new EmbedBuilder()
+        .setColor(CONFIG.brand.color)
+        .setTitle('🔄 Trocas entre membros')
+        .setDescription(
+          'Publique uma troca de conta/item com **foto obrigatória**. O anúncio fica ativo por **30 minutos**.\n\n' +
+          'Quem tiver interesse pode clicar em **Oferta** e enviar foto + descrição opcional. Se uma oferta for aceita, o bot abre um ticket privado visível somente pelos dois participantes, o **DONO** e, se solicitado, o mediador escolhido.'
+        )],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('trade_create').setLabel('Criar anúncio').setEmoji('🔄').setStyle(ButtonStyle.Danger),
+      )],
+    };
+    const old = oldId ? await tradesCh.messages.fetch(oldId).catch(() => null) : null;
+    const msg = old ? await old.edit(payload) : await tradesCh.send(payload);
+    await setSetting(guild.id, 'trades_panel_message_id', msg.id);
+  }
+
+  const revenueCh = findChannel(guild, CONFIG.channels.revenue);
+  if (revenueCh) {
+    const splitOwner = Number((await getSetting(guild.id, 'owner_share_percent')) || 60);
+    const splitAdmin = Number((await getSetting(guild.id, 'admin_pool_percent')) || 40);
+    const oldId = await getSetting(guild.id, 'revenue_info_message_id');
+    const payload = {
+      embeds: [new EmbedBuilder()
+        .setColor(CONFIG.brand.color)
+        .setTitle('💰 Arrecadação e divisão')
+        .setDescription(
+          `A arrecadação soma automaticamente as vendas concluídas.\n\n` +
+          `👑 DONO: **${splitOwner}%**\n` +
+          `🛡️ Pool dos ADMs: **${splitAdmin}%** (dividido igualmente entre ADMs)\n` +
+          `🤝 Mediação: **R$ 10,00** por mediação concluída, **100% do mediador**.\n\n` +
+          'As porcentagens podem ser alteradas pelo DONO no painel administrativo.'
+        )],
+    };
+    const old = oldId ? await revenueCh.messages.fetch(oldId).catch(() => null) : null;
+    const msg = old ? await old.edit(payload) : await revenueCh.send(payload);
+    await setSetting(guild.id, 'revenue_info_message_id', msg.id);
+  }
+
+  const manualCh = findChannel(guild, CONFIG.channels.adminManual);
+  if (manualCh) {
+    const ownerPct = Number((await getSetting(guild.id, 'owner_share_percent')) || 60);
+    const adminPct = Number((await getSetting(guild.id, 'admin_pool_percent')) || 40);
+    const oldId = await getSetting(guild.id, 'admin_manual_message_id');
+    const payload = {
+      embeds: [new EmbedBuilder()
+        .setColor(CONFIG.brand.color)
+        .setTitle('📘 Manual dos ADMs — Berovenda\'s')
+        .setDescription(
+          '**Salário / participação**\n' +
+          `• Pool atual da equipe: **${adminPct}%** das vendas concluídas, dividido entre ADMs.\n` +
+          `• DONO: **${ownerPct}%**.\n` +
+          '• Mediações concluídas: **R$ 10,00**, 100% do ADM mediador.\n\n' +
+          '**Regras para manter o cargo**\n' +
+          '• Não compartilhar dados de clientes, credenciais ou informações internas.\n' +
+          '• Não confirmar pagamento sem conferir.\n' +
+          '• Não marcar pedido como entregue sem a entrega real.\n' +
+          '• Não usar comandos de moderação para benefício próprio.\n' +
+          '• Não entrar em tickets de troca privados sem ter sido chamado como mediador.\n' +
+          '• Manter respeito com clientes e equipe.\n\n' +
+          '**Comandos importantes**\n' +
+          '`+setup`, `+painel`, `+admin`, `+hs N`, `+excluir N`.\n\n' +
+          'Quebras graves dessas regras podem resultar na remoção do cargo.'
+        )],
+    };
+    const old = oldId ? await manualCh.messages.fetch(oldId).catch(() => null) : null;
+    const msg = old ? await old.edit(payload) : await manualCh.send(payload);
+    await setSetting(guild.id, 'admin_manual_message_id', msg.id);
   }
 
   const termsCh = findChannel(guild, CONFIG.channels.terms);
@@ -944,8 +1209,13 @@ async function createPurchase(user, guild, productId, requestedQuantity) {
     if (p.stock <= 0) { await db.query('ROLLBACK'); return { success: false, reason: 'OUT' }; }
     const q = Math.min(Math.max(1, requestedQuantity), CONFIG.maxQuantity, p.stock);
     const subtotal = Number((p.price * q).toFixed(2));
-    const cart = await db.query('SELECT coupon_code FROM carts WHERE guild_id=$1 AND user_id=$2', [guild.id, user.id]);
+    const cart = await db.query('SELECT coupon_code,roblox_username FROM carts WHERE guild_id=$1 AND user_id=$2', [guild.id, user.id]);
     const couponCode = cart.rows[0]?.coupon_code || null;
+    const robloxUsername = cart.rows[0]?.roblox_username || null;
+    if (!robloxUsername) {
+      await db.query('ROLLBACK');
+      return { success: false, reason: 'ROBLOX_REQUIRED' };
+    }
 
     let discount = 0;
     let total = subtotal;
@@ -967,9 +1237,9 @@ async function createPurchase(user, guild, productId, requestedQuantity) {
 
     await db.query('UPDATE products SET stock=stock-$2,updated_at=NOW() WHERE id=$1', [productId, q]);
     const ins = await db.query(
-      `INSERT INTO purchases(guild_id,user_id,username,product_id,product_name,quantity,unit_price,subtotal,discount,total,status,coupon_code)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'PENDING',$11) RETURNING *`,
-      [guild.id, user.id, user.username, p.id, p.name, q, p.price, subtotal, discount, total, couponUsed],
+      `INSERT INTO purchases(guild_id,user_id,username,product_id,product_name,quantity,unit_price,subtotal,discount,total,status,coupon_code,roblox_username,purchase_type)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'PENDING',$11,$12,'RAP') RETURNING *`,
+      [guild.id, user.id, user.username, p.id, p.name, q, p.price, subtotal, discount, total, couponUsed, robloxUsername],
     );
     purchase = ins.rows[0];
     if (couponUsed) {
@@ -989,6 +1259,7 @@ async function createPurchase(user, guild, productId, requestedQuantity) {
       .setTitle(`🛒 Pedido #${purchase.id}`)
       .addFields(
         { name: 'Cliente', value: `<@${user.id}>`, inline: true },
+        { name: '🎮 Roblox', value: purchase.roblox_username || 'Não informado', inline: true },
         { name: 'Produto', value: purchase.product_name, inline: true },
         { name: 'Quantidade', value: String(purchase.quantity), inline: true },
         { name: 'Subtotal', value: money(purchase.subtotal), inline: true },
@@ -1257,7 +1528,22 @@ async function markPaid(interaction, purchaseId) {
   if (!isAdmin(interaction.member)) return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
   const r = await pool.query(`UPDATE purchases SET status='PAID',paid_at=NOW() WHERE id=$1 AND status='PENDING' RETURNING *`, [purchaseId]);
   if (!r.rowCount) return interaction.reply({ content: 'ℹ️ Pedido não está aguardando pagamento ou não foi encontrado.', ephemeral: true });
-  await adminLog(interaction.guild, interaction.user, 'PAYMENT_CONFIRMED', { productId: r.rows[0].product_id, productName: r.rows[0].product_name, details: { purchaseId } });
+  const purchase = r.rows[0];
+  await adminLog(interaction.guild, interaction.user, 'PAYMENT_CONFIRMED', { productId: purchase.product_id, productName: purchase.product_name, details: { purchaseId } });
+
+  if (purchase.purchase_type === 'STEAM') {
+    const delivered = await deliverSteamPurchase(interaction.guild, purchase);
+    if (!delivered.success) {
+      await interaction.channel?.send({
+        content: `⚠️ Pagamento confirmado, mas a entrega automática por DM falhou (**${delivered.reason}**). Peça ao cliente para habilitar DMs e tente novamente.`,
+        components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`steam_retry_delivery:${purchaseId}`).setLabel('Tentar entrega novamente').setStyle(ButtonStyle.Danger))],
+      }).catch(() => {});
+      return interaction.reply({ content: '⚠️ Pagamento confirmado, mas a DM de entrega falhou.', ephemeral: true });
+    }
+    await interaction.channel?.send(`✅ Pedido Steam **#${purchaseId}** entregue automaticamente por DM.`).catch(() => {});
+    return interaction.reply({ content: `✅ Pagamento confirmado e Steam entregue. Cupom de 5%: **${delivered.coupon}**.`, ephemeral: true });
+  }
+
   await interaction.channel?.send(`💰 Pagamento do pedido **#${purchaseId}** confirmado. Agora o pedido pode ser marcado como entregue.`).catch(() => {});
   return interaction.reply({ content: '✅ Pagamento confirmado.', ephemeral: true });
 }
@@ -1283,6 +1569,7 @@ async function completePurchase(interaction, purchaseId) {
       .setThumbnail(user?.displayAvatarURL() || null)
       .addFields(
         { name: 'Cliente', value: `<@${p.user_id}>`, inline: true },
+        { name: '🎮 Roblox', value: p.roblox_username || '—', inline: true },
         { name: 'Produto', value: p.product_name, inline: true },
         { name: 'Quantidade', value: String(p.quantity), inline: true },
         { name: 'Valor', value: money(p.total), inline: true },
@@ -1292,13 +1579,31 @@ async function completePurchase(interaction, purchaseId) {
     await sales.send({ embeds: [embed] });
   }
 
+  const loyaltyCoupon = await createLoyaltyCoupon(p.user_id, p.id);
+  await recordSaleRevenue(p);
+
+  const rapPerUnit = CONFIG.products[p.product_id]?.rap || 0;
+  const totalRap = rapPerUnit * Number(p.quantity);
+
   if (user) {
     await user.send({
-      content: `✅ Seu pedido **#${p.id}** foi marcado como entregue. Obrigado por comprar na **Berovenda's**.`,
+      embeds: [new EmbedBuilder()
+        .setColor(CONFIG.brand.color)
+        .setTitle(`✅ Pedido #${p.id} entregue`)
+        .addFields(
+          { name: '🎮 Roblox', value: p.roblox_username || 'Não informado', inline: true },
+          { name: '📦 Produto', value: p.product_name, inline: true },
+          { name: '🔢 Quantidade', value: String(p.quantity), inline: true },
+          { name: '💎 RAP entregue', value: totalRap ? `${totalRap.toLocaleString('pt-BR')} RAP` : '—', inline: true },
+          { name: '💰 Valor pago', value: money(p.total), inline: true },
+          { name: '🎟️ Cupom da próxima compra', value: `**${loyaltyCoupon}** — 5%`, inline: false },
+        )
+        .setDescription("Obrigado por comprar na **Berovenda's**!")
+        .setTimestamp()],
       components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`feedback_open:${p.id}`).setLabel('Avaliar compra').setEmoji('⭐').setStyle(ButtonStyle.Danger))],
     }).catch(() => {});
   }
-  await addHistory('PURCHASE_COMPLETED', { userId: p.user_id, username: p.username, productId: p.product_id, productName: p.product_name, quantity: p.quantity, details: { purchaseId } });
+  await addHistory('PURCHASE_COMPLETED', { userId: p.user_id, username: p.username, productId: p.product_id, productName: p.product_name, quantity: p.quantity, details: { purchaseId, robloxUsername: p.roblox_username, loyaltyCoupon } });
   await adminLog(interaction.guild, interaction.user, 'COMPLETE_PURCHASE', { productId: p.product_id, productName: p.product_name, details: { purchaseId } });
   return interaction.reply({ content: '✅ Pedido entregue, cargo de cliente aplicado e avaliação enviada por DM.', ephemeral: true });
 }
@@ -1313,7 +1618,11 @@ async function cancelPurchase(interaction, purchaseId) {
     const p = r.rows[0];
     if (['COMPLETED', 'CANCELLED'].includes(p.status)) { await db.query('ROLLBACK'); return interaction.reply({ content: 'ℹ️ Pedido já está finalizado.', ephemeral: true }); }
     await db.query(`UPDATE purchases SET status='CANCELLED',cancelled_at=NOW() WHERE id=$1`, [purchaseId]);
-    await db.query('UPDATE products SET stock=stock+$2,updated_at=NOW() WHERE id=$1', [p.product_id, p.quantity]);
+    if (p.purchase_type === 'STEAM' && p.steam_account_id) {
+      await db.query(`UPDATE steam_accounts SET status='AVAILABLE',reserved_by=NULL,reserved_at=NULL WHERE id=$1 AND status='RESERVED'`, [p.steam_account_id]);
+    } else {
+      await db.query('UPDATE products SET stock=stock+$2,updated_at=NOW() WHERE id=$1', [p.product_id, p.quantity]);
+    }
     if (p.coupon_code) {
       await db.query('UPDATE coupons SET used_count=GREATEST(0,used_count-1) WHERE code=$1', [p.coupon_code]);
       await db.query('DELETE FROM coupon_uses WHERE purchase_id=$1', [purchaseId]);
@@ -1322,7 +1631,8 @@ async function cancelPurchase(interaction, purchaseId) {
     await addHistory('PURCHASE_CANCELLED', { userId: p.user_id, username: p.username, productId: p.product_id, productName: p.product_name, quantity: p.quantity, details: { purchaseId } });
     await adminLog(interaction.guild, interaction.user, 'CANCEL_PURCHASE', { productId: p.product_id, productName: p.product_name, details: { purchaseId } });
     await refreshPanels(interaction.guild);
-    await startRestockNotifications(interaction.guild, p.product_id);
+    if (p.purchase_type !== 'STEAM') await startRestockNotifications(interaction.guild, p.product_id);
+    await publishStaticPanels(interaction.guild);
     return interaction.reply({ content: '✅ Pedido cancelado e estoque devolvido. Se houver pagamento, o reembolso continua sendo tratado manualmente.', ephemeral: true });
   } catch (e) {
     await db.query('ROLLBACK');
@@ -1378,6 +1688,752 @@ async function handleFeedback(interaction) {
   }
 }
 
+
+function steamEncryptionKey() {
+  const material = process.env.STEAM_ENCRYPTION_KEY || process.env.DISCORD_TOKEN;
+  return crypto.createHash('sha256').update(material).digest();
+}
+
+function encryptSteamPassword(value) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', steamEncryptionKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(String(value), 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${iv.toString('base64')}.${tag.toString('base64')}.${encrypted.toString('base64')}`;
+}
+
+function decryptSteamPassword(value) {
+  const [ivB64, tagB64, dataB64] = String(value).split('.');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', steamEncryptionKey(), Buffer.from(ivB64, 'base64'));
+  decipher.setAuthTag(Buffer.from(tagB64, 'base64'));
+  return Buffer.concat([decipher.update(Buffer.from(dataB64, 'base64')), decipher.final()]).toString('utf8');
+}
+
+function max50Words(text) {
+  return String(text || '').trim().split(/\s+/).filter(Boolean).length <= 50;
+}
+
+async function createLoyaltyCoupon(userId, purchaseId) {
+  const code = `VOLTA5-${String(userId).slice(-5)}-${purchaseId}`.toUpperCase();
+  await pool.query(
+    `INSERT INTO coupons(code,discount_type,discount_value,product_id,max_uses,max_uses_per_user,used_count,active,created_by,owner_user_id,source)
+     VALUES($1,'PERCENT',5,NULL,1,1,0,TRUE,'SYSTEM',$2,'LOYALTY')
+     ON CONFLICT(code) DO NOTHING`,
+    [code, userId],
+  );
+  return code;
+}
+
+async function syncBoosterCoupon(member, notify = false) {
+  if (!member || member.user.bot) return;
+  const code = `BOOST10-${String(member.id).slice(-7)}`.toUpperCase();
+  if (member.premiumSince) {
+    const r = await pool.query(
+      `INSERT INTO coupons(code,discount_type,discount_value,product_id,max_uses,max_uses_per_user,used_count,active,created_by,owner_user_id,source)
+       VALUES($1,'PERCENT',10,NULL,NULL,999999,0,TRUE,'SYSTEM',$2,'BOOSTER')
+       ON CONFLICT(code) DO UPDATE SET active=TRUE,owner_user_id=EXCLUDED.owner_user_id,source='BOOSTER'
+       RETURNING code`,
+      [code, member.id],
+    );
+    if (notify && r.rowCount) {
+      await member.user.send(`🚀 Obrigado por impulsionar a **Berovenda's**!\nSeu cupom exclusivo de booster é **${code}** e dá **10% de desconto** enquanto você for booster.`).catch(() => {});
+    }
+  } else {
+    await pool.query(`UPDATE coupons SET active=FALSE WHERE owner_user_id=$1 AND source='BOOSTER'`, [member.id]);
+  }
+}
+
+async function syncGuildBoosters(guild) {
+  await guild.members.fetch().catch(() => {});
+  for (const member of guild.members.cache.values()) {
+    if (!member.user.bot) await syncBoosterCoupon(member, false).catch(() => {});
+  }
+}
+
+async function recordSaleRevenue(purchase) {
+  await pool.query(
+    `INSERT INTO revenue_ledger(guild_id,entry_type,amount,purchase_id,details)
+     VALUES($1,'SALE',$2,$3,$4)
+     ON CONFLICT(entry_type,purchase_id) DO NOTHING`,
+    [purchase.guild_id, Number(purchase.total), Number(purchase.id), JSON.stringify({ product: purchase.product_name, type: purchase.purchase_type || 'RAP' })],
+  );
+}
+
+async function revenueSummary(guild) {
+  const sales = Number((await pool.query(`SELECT COALESCE(SUM(amount),0) total FROM revenue_ledger WHERE guild_id=$1 AND entry_type='SALE'`, [guild.id])).rows[0].total);
+  const mediation = Number((await pool.query(`SELECT COALESCE(SUM(amount),0) total FROM mediation_earnings WHERE guild_id=$1`, [guild.id])).rows[0].total);
+  const ownerPct = Number((await getSetting(guild.id, 'owner_share_percent')) || 60);
+  const adminPct = Number((await getSetting(guild.id, 'admin_pool_percent')) || 40);
+  const adminRole = findRole(guild, CONFIG.roles.admin);
+  const admins = adminRole ? adminRole.members.filter((m) => !m.user.bot).size : 0;
+  return {
+    sales,
+    mediation,
+    ownerPct,
+    adminPct,
+    ownerValue: Number((sales * ownerPct / 100).toFixed(2)),
+    adminPoolValue: Number((sales * adminPct / 100).toFixed(2)),
+    admins,
+    perAdmin: admins ? Number((sales * adminPct / 100 / admins).toFixed(2)) : 0,
+  };
+}
+
+async function handleAdminRevenue(interaction) {
+  if (!isAdmin(interaction.member)) return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
+  if (interaction.customId === 'admin_revenue') {
+    const x = await revenueSummary(interaction.guild);
+    return interaction.reply({
+      embeds: [new EmbedBuilder()
+        .setColor(CONFIG.brand.color)
+        .setTitle('💰 Arrecadação')
+        .addFields(
+          { name: 'Vendas concluídas', value: money(x.sales), inline: true },
+          { name: `👑 DONO (${x.ownerPct}%)`, value: money(x.ownerValue), inline: true },
+          { name: `🛡️ ADMs (${x.adminPct}%)`, value: money(x.adminPoolValue), inline: true },
+          { name: 'ADMs no pool', value: String(x.admins), inline: true },
+          { name: 'Estimativa por ADM', value: money(x.perAdmin), inline: true },
+          { name: 'Mediações', value: `${money(x.mediation)} — 100% dos mediadores`, inline: true },
+        )
+        .setFooter({ text: 'Valores calculados sobre vendas registradas como concluídas.' })],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('revenue_split').setLabel('Alterar porcentagens').setStyle(ButtonStyle.Danger),
+      )],
+      ephemeral: true,
+    });
+  }
+  if (interaction.customId === 'revenue_split') {
+    if (!isOwner(interaction.member)) return interaction.reply({ content: '❌ Apenas o DONO pode alterar a divisão.', ephemeral: true });
+    const modal = new ModalBuilder().setCustomId('revenue_split_modal').setTitle('Divisão da arrecadação');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('owner').setLabel('Porcentagem do DONO').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('60')),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('admins').setLabel('Porcentagem do pool dos ADMs').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('40')),
+    );
+    return interaction.showModal(modal);
+  }
+  if (interaction.isModalSubmit() && interaction.customId === 'revenue_split_modal') {
+    if (!isOwner(interaction.member)) return interaction.reply({ content: '❌ Apenas o DONO pode alterar a divisão.', ephemeral: true });
+    const owner = Number(interaction.fields.getTextInputValue('owner').replace(',', '.'));
+    const admins = Number(interaction.fields.getTextInputValue('admins').replace(',', '.'));
+    if (!Number.isFinite(owner) || !Number.isFinite(admins) || owner <= admins || owner <= 0 || admins < 0 || Math.abs(owner + admins - 100) > 0.001) {
+      return interaction.reply({ content: '❌ As porcentagens devem somar **100%** e a porcentagem do DONO precisa ser maior que a dos ADMs.', ephemeral: true });
+    }
+    await setSetting(interaction.guild.id, 'owner_share_percent', String(owner));
+    await setSetting(interaction.guild.id, 'admin_pool_percent', String(admins));
+    await adminLog(interaction.guild, interaction.user, 'SET_REVENUE_SPLIT', { details: { owner, admins } });
+    await publishStaticPanels(interaction.guild);
+    return interaction.reply({ content: `✅ Divisão atualizada: DONO **${owner}%** / ADMs **${admins}%**.`, ephemeral: true });
+  }
+}
+
+async function handleAdminSteam(interaction) {
+  if (!isAdmin(interaction.member)) return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
+  const id = interaction.customId || '';
+  if (id === 'admin_steam') {
+    const available = Number((await pool.query(`SELECT COUNT(*)::int n FROM steam_accounts WHERE guild_id=$1 AND status='AVAILABLE'`, [interaction.guild.id])).rows[0].n);
+    return interaction.reply({
+      content: `🎮 **Estoque Steam**\nContas disponíveis: **${available}**`,
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('steam_admin_add').setLabel('Adicionar conta').setEmoji('➕').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('steam_admin_list').setLabel('Ver estoque').setStyle(ButtonStyle.Secondary),
+      )],
+      ephemeral: true,
+    });
+  }
+  if (id === 'steam_admin_add') {
+    const modal = new ModalBuilder().setCustomId('steam_admin_modal').setTitle('Adicionar conta Steam');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('game').setLabel('Jogo / título').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('price').setLabel('Preço').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('19,90')),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('username').setLabel('Usuário Steam').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('password').setLabel('Senha Steam').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('description').setLabel('Descrição (máx. 50 palavras)').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(500)),
+    );
+    return interaction.showModal(modal);
+  }
+  if (interaction.isModalSubmit() && id === 'steam_admin_modal') {
+    const game = interaction.fields.getTextInputValue('game').trim();
+    const price = Number(interaction.fields.getTextInputValue('price').replace(',', '.'));
+    const username = interaction.fields.getTextInputValue('username').trim();
+    const password = interaction.fields.getTextInputValue('password');
+    const description = interaction.fields.getTextInputValue('description').trim();
+    if (!game || !Number.isFinite(price) || price <= 0 || !username || !password) return interaction.reply({ content: '❌ Dados inválidos.', ephemeral: true });
+    if (!max50Words(description)) return interaction.reply({ content: '❌ A descrição deve ter no máximo **50 palavras**.', ephemeral: true });
+    const enc = encryptSteamPassword(password);
+    const r = await pool.query(
+      `INSERT INTO steam_accounts(guild_id,game_title,price,username,password_encrypted,description,added_by)
+       VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+      [interaction.guild.id, game, price, username, enc, description || null, interaction.user.id],
+    );
+    await adminLog(interaction.guild, interaction.user, 'ADD_STEAM_ACCOUNT', { details: { steamAccountId: Number(r.rows[0].id), game, price } });
+    await publishStaticPanels(interaction.guild);
+    return interaction.reply({ content: `✅ Conta Steam adicionada ao estoque: **${game}** — ${money(price)}.`, ephemeral: true });
+  }
+  if (id === 'steam_admin_list') {
+    const rows = (await pool.query(`SELECT id,game_title,price,status,description FROM steam_accounts WHERE guild_id=$1 ORDER BY created_at DESC LIMIT 20`, [interaction.guild.id])).rows;
+    const text = rows.length ? rows.map((x) => `• **#${x.id} ${x.game_title}** — ${money(x.price)} — **${x.status}**${x.description ? ` — ${x.description}` : ''}`).join('\n') : 'Nenhuma conta cadastrada.';
+    return interaction.reply({ content: `🎮 **Estoque Steam**\n\n${text}`, ephemeral: true });
+  }
+}
+
+async function createSteamPurchase(interaction, accountId) {
+  const db = await pool.connect();
+  let purchase = null;
+  try {
+    await db.query('BEGIN');
+    const aRes = await db.query(`SELECT * FROM steam_accounts WHERE id=$1 AND guild_id=$2 FOR UPDATE`, [accountId, interaction.guild.id]);
+    if (!aRes.rowCount || aRes.rows[0].status !== 'AVAILABLE') {
+      await db.query('ROLLBACK');
+      return { success: false, reason: 'UNAVAILABLE' };
+    }
+    const a = aRes.rows[0];
+    await db.query(`UPDATE steam_accounts SET status='RESERVED',reserved_by=$2,reserved_at=NOW() WHERE id=$1`, [accountId, interaction.user.id]);
+    const pRes = await db.query(
+      `INSERT INTO purchases(guild_id,user_id,username,product_id,product_name,quantity,unit_price,subtotal,discount,total,status,purchase_type,steam_account_id)
+       VALUES($1,$2,$3,'steam',$4,1,$5,$5,0,$5,'PENDING','STEAM',$6) RETURNING *`,
+      [interaction.guild.id, interaction.user.id, interaction.user.username, a.game_title, Number(a.price), Number(a.id)],
+    );
+    purchase = pRes.rows[0];
+    await db.query('COMMIT');
+
+    const ticket = await createPrivateTicket(interaction.guild, interaction.user, 'purchase', purchase);
+    await pool.query(`UPDATE purchases SET ticket_id=$2 WHERE id=$1`, [purchase.id, ticket.id]);
+    await ticket.send({
+      content: `<@${interaction.user.id}>`,
+      embeds: [new EmbedBuilder()
+        .setColor(CONFIG.brand.color)
+        .setTitle(`🎮 Pedido Steam #${purchase.id}`)
+        .addFields(
+          { name: 'Jogo', value: purchase.product_name, inline: true },
+          { name: 'Valor', value: money(purchase.total), inline: true },
+          { name: 'Status', value: '🟡 Aguardando pagamento', inline: true },
+          { name: 'Entrega', value: 'Após o pagamento ser confirmado, as credenciais serão enviadas **automaticamente por DM**.', inline: false },
+        )],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`purchase_paid:${purchase.id}`).setLabel('Pagamento recebido').setEmoji('💰').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`purchase_cancel:${purchase.id}`).setLabel('Cancelar').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('ticket_close').setLabel('Fechar ticket').setStyle(ButtonStyle.Secondary),
+      )],
+    });
+    await addHistory('STEAM_PURCHASE_CREATED', { userId: interaction.user.id, username: interaction.user.username, productName: purchase.product_name, details: { purchaseId: Number(purchase.id), steamAccountId: Number(a.id) } });
+    return { success: true, purchase, ticket };
+  } catch (e) {
+    try { await db.query('ROLLBACK'); } catch {}
+    if (purchase?.steam_account_id) await pool.query(`UPDATE steam_accounts SET status='AVAILABLE',reserved_by=NULL,reserved_at=NULL WHERE id=$1`, [purchase.steam_account_id]).catch(() => {});
+    throw e;
+  } finally {
+    db.release();
+  }
+}
+
+async function deliverSteamPurchase(guild, purchase) {
+  const aRes = await pool.query(`SELECT * FROM steam_accounts WHERE id=$1`, [purchase.steam_account_id]);
+  if (!aRes.rowCount) return { success: false, reason: 'ACCOUNT_NOT_FOUND' };
+  const a = aRes.rows[0];
+  const user = await client.users.fetch(purchase.user_id).catch(() => null);
+  if (!user) return { success: false, reason: 'USER_NOT_FOUND' };
+  const password = decryptSteamPassword(a.password_encrypted);
+  const coupon = await createLoyaltyCoupon(purchase.user_id, purchase.id);
+  const dm = await user.send({
+    embeds: [new EmbedBuilder()
+      .setColor(CONFIG.brand.color)
+      .setTitle(`✅ Pedido Steam #${purchase.id} entregue`)
+      .addFields(
+        { name: '🎮 Jogo', value: purchase.product_name, inline: true },
+        { name: '👤 Usuário Steam', value: `\`${a.username}\``, inline: false },
+        { name: '🔑 Senha', value: `\`${password}\``, inline: false },
+        { name: '📝 Descrição', value: a.description || 'Sem descrição.', inline: false },
+        { name: '💰 Valor pago', value: money(purchase.total), inline: true },
+        { name: '🎟️ Cupom da próxima compra', value: `**${coupon}** — 5%`, inline: false },
+      )
+      .setFooter({ text: 'Não compartilhe estas credenciais em canais públicos.' })
+      .setTimestamp()],
+    components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`feedback_open:${purchase.id}`).setLabel('Avaliar compra').setEmoji('⭐').setStyle(ButtonStyle.Danger))],
+  }).catch(() => null);
+  if (!dm) return { success: false, reason: 'DM_CLOSED' };
+
+  await pool.query(`UPDATE steam_accounts SET status='SOLD',buyer_user_id=$2,sold_at=NOW() WHERE id=$1`, [a.id, purchase.user_id]);
+  const r = await pool.query(`UPDATE purchases SET status='COMPLETED',completed_at=NOW() WHERE id=$1 RETURNING *`, [purchase.id]);
+  await recordSaleRevenue(r.rows[0]);
+  const member = await guild.members.fetch(purchase.user_id).catch(() => null);
+  const customer = findRole(guild, CONFIG.roles.customer);
+  if (member && customer) await member.roles.add(customer).catch(() => {});
+  const sales = findChannel(guild, CONFIG.channels.sales);
+  if (sales) {
+    await sales.send({ embeds: [new EmbedBuilder().setColor(CONFIG.brand.color).setTitle('✅ Steam entregue automaticamente').addFields(
+      { name: 'Cliente', value: `<@${purchase.user_id}>`, inline: true },
+      { name: 'Jogo', value: purchase.product_name, inline: true },
+      { name: 'Valor', value: money(purchase.total), inline: true },
+      { name: 'Pedido', value: `#${purchase.id}`, inline: true },
+    ).setTimestamp()] }).catch(() => {});
+  }
+  return { success: true, coupon };
+}
+
+async function handleSteamStore(interaction) {
+  const id = interaction.customId || '';
+  if (id === 'steam_browse') {
+    const rows = (await pool.query(`SELECT id,game_title,price,description FROM steam_accounts WHERE guild_id=$1 AND status='AVAILABLE' ORDER BY created_at ASC LIMIT 25`, [interaction.guild.id])).rows;
+    if (!rows.length) return interaction.reply({ content: '🔴 Não há contas Steam disponíveis no momento.', ephemeral: true });
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId('steam_select')
+      .setPlaceholder('Escolha uma conta / jogo')
+      .addOptions(rows.map((x) => ({
+        label: `${x.game_title}`.slice(0, 100),
+        description: `${money(x.price)}${x.description ? ` • ${x.description}` : ''}`.slice(0, 100),
+        value: String(x.id),
+      })));
+    return interaction.reply({ content: '🎮 Escolha uma opção:', components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
+  }
+  if (interaction.isStringSelectMenu() && id === 'steam_select') {
+    const accountId = Number(interaction.values[0]);
+    const a = (await pool.query(`SELECT id,game_title,price,description FROM steam_accounts WHERE id=$1 AND guild_id=$2 AND status='AVAILABLE'`, [accountId, interaction.guild.id])).rows[0];
+    if (!a) return interaction.update({ content: '❌ Essa conta não está mais disponível.', components: [] });
+    return interaction.update({
+      content: `🎮 **${a.game_title}**\n💰 **${money(a.price)}**\n📝 ${a.description || 'Sem descrição.'}\n\nApós confirmação de pagamento, usuário e senha serão enviados automaticamente por DM.`,
+      components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`steam_buy:${a.id}`).setLabel('Comprar').setEmoji('🛒').setStyle(ButtonStyle.Danger))],
+    });
+  }
+  if (id.startsWith('steam_buy:')) {
+    const accountId = Number(id.split(':')[1]);
+    await interaction.deferReply({ ephemeral: true });
+    const r = await createSteamPurchase(interaction, accountId);
+    if (!r.success) return interaction.editReply('❌ A conta ficou indisponível antes da confirmação.');
+    return interaction.editReply(`✅ Pedido Steam **#${r.purchase.id}** criado: ${r.ticket}`);
+  }
+}
+
+async function drawGiveaway(guild, giveawayId, actor = null) {
+  const gRes = await pool.query(`SELECT * FROM giveaways WHERE id=$1 AND guild_id=$2`, [giveawayId, guild.id]);
+  if (!gRes.rowCount || gRes.rows[0].status !== 'ACTIVE') return { success: false, reason: 'INACTIVE' };
+  const entries = (await pool.query(`SELECT user_id FROM giveaway_entries WHERE giveaway_id=$1`, [giveawayId])).rows;
+  if (!entries.length) return { success: false, reason: 'NO_ENTRIES' };
+  const winner = entries[crypto.randomInt(entries.length)].user_id;
+  await pool.query(`UPDATE giveaways SET status='DRAWN',winner_user_id=$2,drawn_at=NOW() WHERE id=$1`, [giveawayId, winner]);
+  const role = findRole(guild, CONFIG.roles.lucky);
+  const member = await guild.members.fetch(winner).catch(() => null);
+  if (member && role) await member.roles.add(role).catch(() => {});
+  const announcements = findChannel(guild, CONFIG.channels.announcements);
+  if (announcements) await announcements.send(`🎉 <@${winner}> ganhou o sorteio **${gRes.rows[0].title}** — prêmio: **${gRes.rows[0].prize}**! ${role ? `Você recebeu ${role}.` : ''}`);
+  if (actor) await adminLog(guild, actor, 'DRAW_GIVEAWAY', { details: { giveawayId, winner } });
+  return { success: true, winner };
+}
+
+async function autoDrawGiveaways() {
+  const rows = (await pool.query(`SELECT * FROM giveaways WHERE status='ACTIVE' AND ends_at IS NOT NULL AND ends_at <= NOW()`)).rows;
+  for (const g of rows) {
+    const guild = client.guilds.cache.get(g.guild_id);
+    if (guild) await drawGiveaway(guild, g.id, null).catch(() => {});
+  }
+}
+
+async function handleGiveaways(interaction) {
+  const id = interaction.customId || '';
+  if (id === 'admin_giveaways') {
+    if (!isAdmin(interaction.member)) return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
+    return interaction.reply({
+      content: '🎉 **Gerenciar sorteios**',
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('giveaway_create').setLabel('Criar sorteio').setStyle(ButtonStyle.Danger),
+      )],
+      ephemeral: true,
+    });
+  }
+  if (id === 'giveaway_create') {
+    if (!isAdmin(interaction.member)) return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
+    const modal = new ModalBuilder().setCustomId('giveaway_create_modal').setTitle('Criar sorteio');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('title').setLabel('Título').setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('prize').setLabel('Prêmio').setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('minutes').setLabel('Duração em minutos').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('60')),
+    );
+    return interaction.showModal(modal);
+  }
+  if (interaction.isModalSubmit() && id === 'giveaway_create_modal') {
+    if (!isAdmin(interaction.member)) return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
+    const title = interaction.fields.getTextInputValue('title').trim();
+    const prize = interaction.fields.getTextInputValue('prize').trim();
+    const minutes = Number(interaction.fields.getTextInputValue('minutes'));
+    if (!title || !prize || !Number.isFinite(minutes) || minutes <= 0) return interaction.reply({ content: '❌ Dados inválidos.', ephemeral: true });
+    const ends = new Date(Date.now() + minutes * 60_000);
+    const ch = findChannel(interaction.guild, CONFIG.channels.giveaways);
+    if (!ch) return interaction.reply({ content: '❌ Canal de sorteios não encontrado. Use `+setup`.', ephemeral: true });
+    const g = (await pool.query(
+      `INSERT INTO giveaways(guild_id,title,prize,created_by,channel_id,ends_at) VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [interaction.guild.id, title, prize, interaction.user.id, ch.id, ends],
+    )).rows[0];
+    const msg = await ch.send({
+      embeds: [new EmbedBuilder().setColor(CONFIG.brand.color).setTitle(`🎉 ${title}`).setDescription(`🎁 Prêmio: **${prize}**\n⏰ Termina <t:${unix(ends)}:R>\n\nClique em **Participar** para entrar.`)],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`giveaway_join:${g.id}`).setLabel('Participar').setEmoji('🎉').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`giveaway_draw:${g.id}`).setLabel('Sortear').setEmoji('🍀').setStyle(ButtonStyle.Secondary),
+      )],
+    });
+    await pool.query(`UPDATE giveaways SET message_id=$2 WHERE id=$1`, [g.id, msg.id]);
+    await adminLog(interaction.guild, interaction.user, 'CREATE_GIVEAWAY', { details: { giveawayId: Number(g.id), title, prize, minutes } });
+    return interaction.reply({ content: `✅ Sorteio criado em ${ch}.`, ephemeral: true });
+  }
+  if (id.startsWith('giveaway_join:')) {
+    const gid = Number(id.split(':')[1]);
+    const g = (await pool.query(`SELECT * FROM giveaways WHERE id=$1`, [gid])).rows[0];
+    if (!g || g.status !== 'ACTIVE' || (g.ends_at && new Date(g.ends_at) <= new Date())) return interaction.reply({ content: '❌ Este sorteio já terminou.', ephemeral: true });
+    await pool.query(`INSERT INTO giveaway_entries(giveaway_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, [gid, interaction.user.id]);
+    return interaction.reply({ content: '✅ Você está participando do sorteio.', ephemeral: true });
+  }
+  if (id.startsWith('giveaway_draw:')) {
+    if (!isAdmin(interaction.member)) return interaction.reply({ content: '❌ Apenas a administração pode sortear.', ephemeral: true });
+    const gid = Number(id.split(':')[1]);
+    const r = await drawGiveaway(interaction.guild, gid, interaction.user);
+    if (!r.success && r.reason === 'NO_ENTRIES') return interaction.reply({ content: '❌ Ainda não há participantes.', ephemeral: true });
+    if (!r.success) return interaction.reply({ content: 'ℹ️ Sorteio já encerrado.', ephemeral: true });
+    return interaction.reply({ content: `🍀 Vencedor: <@${r.winner}>`, ephemeral: true });
+  }
+}
+
+async function createTradeDraftChannel(guild, user, stage, payload, tradeId = null) {
+  const ownerRole = findRole(guild, CONFIG.roles.owner);
+  const adminRole = findRole(guild, CONFIG.roles.admin);
+  const category = guild.channels.cache.find((c) => c.type === ChannelType.GuildCategory && c.name === CONFIG.categories.trades);
+  const ch = await guild.channels.create({
+    name: `rascunho-${stage.toLowerCase()}-${user.id.slice(-6)}`,
+    type: ChannelType.GuildText,
+    parent: category?.id,
+    permissionOverwrites: [
+      { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+      ...(adminRole ? [{ id: adminRole.id, deny: [PermissionFlagsBits.ViewChannel] }] : []),
+      { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles] },
+      ...(ownerRole ? [{ id: ownerRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }] : []),
+    ],
+  });
+  await pool.query(
+    `INSERT INTO trade_drafts(channel_id,guild_id,user_id,stage,trade_id,payload) VALUES($1,$2,$3,$4,$5,$6)
+     ON CONFLICT(channel_id) DO UPDATE SET payload=EXCLUDED.payload,stage=EXCLUDED.stage,trade_id=EXCLUDED.trade_id`,
+    [ch.id, guild.id, user.id, stage, tradeId, JSON.stringify(payload || {})],
+  );
+  await ch.send(`<@${user.id}> envie **uma foto obrigatória** da conta/item neste canal. Assim que a imagem chegar, o bot continuará automaticamente.`);
+  return ch;
+}
+
+async function publishTradeFromDraft(message, draft) {
+  const payload = draft.payload || {};
+  const attachment = message.attachments.find((a) => (a.contentType || '').startsWith('image/')) || message.attachments.first();
+  if (!attachment) return message.reply('❌ Envie uma **imagem** como anexo.');
+  const tradesCh = findChannel(message.guild, CONFIG.channels.trades);
+  if (!tradesCh) return message.reply('❌ Canal de trocas não encontrado.');
+
+  if (draft.stage === 'AD') {
+    const active = await pool.query(`SELECT 1 FROM trades WHERE guild_id=$1 AND advertiser_id=$2 AND status='ACTIVE' AND expires_at > NOW() LIMIT 1`, [message.guild.id, message.author.id]);
+    if (active.rowCount) return message.reply('⚠️ Você já tem um anúncio ativo. Aguarde os 30 minutos ou finalize a negociação atual.');
+
+    const expires = new Date(Date.now() + 30 * 60_000);
+    const t = (await pool.query(
+      `INSERT INTO trades(guild_id,advertiser_id,advertiser_name,offer_text,want_text,description,image_url,expires_at)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [message.guild.id, message.author.id, message.author.username, payload.offerText, payload.wantText, payload.description || null, attachment.url, expires],
+    )).rows[0];
+
+    const msg = await tradesCh.send({
+      content: `<@${message.author.id}>`,
+      embeds: [new EmbedBuilder()
+        .setColor(CONFIG.brand.color)
+        .setTitle(`🔄 Troca #${t.id}`)
+        .setAuthor({ name: message.author.username, iconURL: message.author.displayAvatarURL() })
+        .setDescription(payload.description || '*Sem descrição adicional.*')
+        .addFields(
+          { name: 'Ofereço', value: payload.offerText },
+          { name: 'Procuro', value: payload.wantText },
+          { name: 'Expira', value: `<t:${unix(expires)}:R>` },
+        )
+        .setImage(attachment.url)],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`trade_offer:${t.id}`).setLabel('Oferta').setEmoji('🤝').setStyle(ButtonStyle.Danger),
+      )],
+    });
+    await pool.query(`UPDATE trades SET channel_id=$2,message_id=$3 WHERE id=$1`, [t.id, tradesCh.id, msg.id]);
+    await pool.query(`DELETE FROM trade_drafts WHERE channel_id=$1`, [message.channel.id]);
+    await message.reply(`✅ Anúncio publicado em ${tradesCh}. Este rascunho será fechado.`);
+    setTimeout(() => message.channel.delete().catch(() => {}), 2000);
+    return;
+  }
+
+  if (draft.stage === 'OFFER') {
+    const t = (await pool.query(`SELECT * FROM trades WHERE id=$1`, [draft.trade_id])).rows[0];
+    if (!t || t.status !== 'ACTIVE' || new Date(t.expires_at) <= new Date()) {
+      await pool.query(`DELETE FROM trade_drafts WHERE channel_id=$1`, [message.channel.id]);
+      return message.reply('❌ O anúncio expirou ou já foi encerrado.');
+    }
+    const o = (await pool.query(
+      `INSERT INTO trade_offers(trade_id,offerer_id,offerer_name,description,image_url)
+       VALUES($1,$2,$3,$4,$5) RETURNING *`,
+      [t.id, message.author.id, message.author.username, payload.description || null, attachment.url],
+    )).rows[0];
+
+    const advertiser = await client.users.fetch(t.advertiser_id).catch(() => null);
+    if (advertiser) {
+      await advertiser.send({
+        embeds: [new EmbedBuilder()
+          .setColor(CONFIG.brand.color)
+          .setTitle(`🤝 Nova oferta na troca #${t.id}`)
+          .setAuthor({ name: message.author.username, iconURL: message.author.displayAvatarURL() })
+          .setDescription(payload.description || '*Sem descrição.*')
+          .setImage(attachment.url)],
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`trade_accept:${o.id}`).setLabel('Aceitar').setStyle(ButtonStyle.Danger),
+          new ButtonBuilder().setCustomId(`trade_reject:${o.id}`).setLabel('Recusar').setStyle(ButtonStyle.Secondary),
+        )],
+      }).catch(() => {});
+    }
+    await pool.query(`DELETE FROM trade_drafts WHERE channel_id=$1`, [message.channel.id]);
+    await message.reply('✅ Oferta enviada ao anunciante por DM.');
+    setTimeout(() => message.channel.delete().catch(() => {}), 2000);
+  }
+}
+
+async function createTradeTicket(guild, trade, offer) {
+  const ownerRole = findRole(guild, CONFIG.roles.owner);
+  const adminRole = findRole(guild, CONFIG.roles.admin);
+  const category = guild.channels.cache.find((c) => c.type === ChannelType.GuildCategory && c.name === CONFIG.categories.trades);
+  const ch = await guild.channels.create({
+    name: `troca-${trade.id}-${offer.id}`,
+    type: ChannelType.GuildText,
+    parent: category?.id,
+    permissionOverwrites: [
+      { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+      ...(adminRole ? [{ id: adminRole.id, deny: [PermissionFlagsBits.ViewChannel] }] : []),
+      { id: trade.advertiser_id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles] },
+      { id: offer.offerer_id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles] },
+      ...(ownerRole ? [{ id: ownerRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }] : []),
+    ],
+  });
+  await pool.query(
+    `INSERT INTO trade_tickets(trade_id,guild_id,channel_id,advertiser_id,offerer_id)
+     VALUES($1,$2,$3,$4,$5)
+     ON CONFLICT(trade_id) DO UPDATE SET channel_id=EXCLUDED.channel_id,offerer_id=EXCLUDED.offerer_id`,
+    [trade.id, guild.id, ch.id, trade.advertiser_id, offer.offerer_id],
+  );
+  await ch.send({
+    content: `<@${trade.advertiser_id}> <@${offer.offerer_id}>`,
+    embeds: [new EmbedBuilder()
+      .setColor(CONFIG.brand.color)
+      .setTitle(`🔄 Negociação privada — troca #${trade.id}`)
+      .setDescription(
+        'Somente os dois participantes e o **DONO** podem ver este ticket inicialmente.\n\n' +
+        '🛡️ **Chamar ADM** — mediação custa **R$ 10,00** e o valor fica 100% com o mediador.\n' +
+        '⚠️ **Continuar sem ADM** — vocês assumem os riscos da negociação; a Berovenda\'s não se responsabiliza por perdas na troca direta.'
+      )],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`trade_call_admin:${trade.id}`).setLabel('Chamar ADM').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`trade_no_admin:${trade.id}`).setLabel('Continuar sem ADM').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`trade_close:${trade.id}`).setLabel('Fechar ticket').setStyle(ButtonStyle.Secondary),
+    )],
+  });
+  return ch;
+}
+
+async function assignTradeMediator(guild, tradeId, adminId) {
+  const ticket = (await pool.query(`SELECT * FROM trade_tickets WHERE trade_id=$1`, [tradeId])).rows[0];
+  if (!ticket) return null;
+  const ch = guild.channels.cache.get(ticket.channel_id) || await guild.channels.fetch(ticket.channel_id).catch(() => null);
+  if (!ch) return null;
+  await ch.permissionOverwrites.edit(adminId, {
+    ViewChannel: true,
+    SendMessages: true,
+    ReadMessageHistory: true,
+  });
+  await pool.query(`UPDATE trade_tickets SET mediator_user_id=$2 WHERE trade_id=$1`, [tradeId, adminId]);
+  await ch.send(`<@${adminId}> foi escolhido como mediador. 💰 Taxa da mediação: **R$ 10,00** — 100% destinada ao mediador.\nQuando finalizar, o mediador ou DONO deve clicar no botão abaixo.`, {
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`trade_mediation_complete:${tradeId}`).setLabel('Mediação concluída').setStyle(ButtonStyle.Danger),
+    )],
+  }).catch(() => {});
+  return ch;
+}
+
+async function handleTrades(interaction) {
+  const id = interaction.customId || '';
+
+  if (id === 'trade_create') {
+    if (!interaction.guild) return interaction.reply({ content: '❌ Use dentro do servidor.', ephemeral: true });
+    const active = await pool.query(`SELECT 1 FROM trades WHERE guild_id=$1 AND advertiser_id=$2 AND status='ACTIVE' AND expires_at > NOW() LIMIT 1`, [interaction.guild.id, interaction.user.id]);
+    if (active.rowCount) return interaction.reply({ content: '⚠️ Você já possui um anúncio ativo. Aguarde os 30 minutos.', ephemeral: true });
+    const modal = new ModalBuilder().setCustomId('trade_create_modal').setTitle('Criar anúncio de troca');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('offer').setLabel('O que você oferece?').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('want').setLabel('O que você procura?').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('description').setLabel('Descrição (opcional)').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(700)),
+    );
+    return interaction.showModal(modal);
+  }
+
+  if (interaction.isModalSubmit() && id === 'trade_create_modal') {
+    const payload = {
+      offerText: interaction.fields.getTextInputValue('offer').trim(),
+      wantText: interaction.fields.getTextInputValue('want').trim(),
+      description: interaction.fields.getTextInputValue('description').trim(),
+    };
+    const ch = await createTradeDraftChannel(interaction.guild, interaction.user, 'AD', payload, null);
+    return interaction.reply({ content: `📸 Agora envie a foto obrigatória em ${ch}.`, ephemeral: true });
+  }
+
+  if (id.startsWith('trade_offer:')) {
+    const tradeId = Number(id.split(':')[1]);
+    const t = (await pool.query(`SELECT * FROM trades WHERE id=$1`, [tradeId])).rows[0];
+    if (!t || t.status !== 'ACTIVE' || new Date(t.expires_at) <= new Date()) return interaction.reply({ content: '❌ Este anúncio expirou.', ephemeral: true });
+    if (t.advertiser_id === interaction.user.id) return interaction.reply({ content: '❌ Você não pode ofertar no próprio anúncio.', ephemeral: true });
+    const modal = new ModalBuilder().setCustomId(`trade_offer_modal:${tradeId}`).setTitle('Enviar oferta');
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId('description').setLabel('Descrição da oferta (opcional)').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(700),
+    ));
+    return interaction.showModal(modal);
+  }
+
+  if (interaction.isModalSubmit() && id.startsWith('trade_offer_modal:')) {
+    const tradeId = Number(id.split(':')[1]);
+    const description = interaction.fields.getTextInputValue('description').trim();
+    const ch = await createTradeDraftChannel(interaction.guild, interaction.user, 'OFFER', { description }, tradeId);
+    return interaction.reply({ content: `📸 Envie a foto da sua oferta em ${ch}.`, ephemeral: true });
+  }
+
+  if (id.startsWith('trade_reject:')) {
+    const offerId = Number(id.split(':')[1]);
+    const o = (await pool.query(`SELECT o.*,t.advertiser_id,t.expires_at,t.status trade_status FROM trade_offers o JOIN trades t ON t.id=o.trade_id WHERE o.id=$1`, [offerId])).rows[0];
+    if (!o || o.advertiser_id !== interaction.user.id) return interaction.reply({ content: '❌ Esta oferta não pertence ao seu anúncio.', ephemeral: true });
+    await pool.query(`UPDATE trade_offers SET status='REJECTED',responded_at=NOW() WHERE id=$1 AND status='PENDING'`, [offerId]);
+    const offerer = await client.users.fetch(o.offerer_id).catch(() => null);
+    if (offerer) await offerer.send(`❌ Sua oferta na troca **#${o.trade_id}** foi recusada.`).catch(() => {});
+    return interaction.update({ content: `❌ Oferta #${offerId} recusada. O anúncio continua ativo até <t:${unix(o.expires_at)}:R>.`, embeds: [], components: [] });
+  }
+
+  if (id.startsWith('trade_accept:')) {
+    const offerId = Number(id.split(':')[1]);
+    const o = (await pool.query(`SELECT o.id offer_id,o.trade_id,o.offerer_id,o.offerer_name,o.description offer_description,o.image_url offer_image,o.status offer_status,t.guild_id,t.advertiser_id,t.advertiser_name,t.offer_text,t.want_text,t.description trade_description,t.image_url trade_image,t.status trade_status,t.expires_at FROM trade_offers o JOIN trades t ON t.id=o.trade_id WHERE o.id=$1`, [offerId])).rows[0];
+    if (!o || o.advertiser_id !== interaction.user.id) return interaction.reply({ content: '❌ Esta oferta não pertence ao seu anúncio.', ephemeral: true });
+    if (o.offer_status !== 'PENDING' || o.trade_status !== 'ACTIVE') return interaction.reply({ content: 'ℹ️ Oferta já respondida.', ephemeral: true });
+    const guild = client.guilds.cache.get(o.guild_id);
+    if (!guild) return interaction.reply({ content: '❌ Servidor não disponível.', ephemeral: true });
+
+    const db = await pool.connect();
+    try {
+      await db.query('BEGIN');
+      const t = (await db.query(`SELECT * FROM trades WHERE id=$1 FOR UPDATE`, [o.trade_id])).rows[0];
+      const off = (await db.query(`SELECT * FROM trade_offers WHERE id=$1 FOR UPDATE`, [offerId])).rows[0];
+      if (!t || t.status !== 'ACTIVE' || !off || off.status !== 'PENDING') {
+        await db.query('ROLLBACK');
+        return interaction.reply({ content: 'ℹ️ Esta negociação já foi alterada.', ephemeral: true });
+      }
+      await db.query(`UPDATE trade_offers SET status='ACCEPTED',responded_at=NOW() WHERE id=$1`, [offerId]);
+      await db.query(`UPDATE trades SET status='ACCEPTED',accepted_offer_id=$2 WHERE id=$1`, [t.id, offerId]);
+      await db.query('COMMIT');
+      const ch = await createTradeTicket(guild, t, off);
+      const offerer = await client.users.fetch(off.offerer_id).catch(() => null);
+      if (offerer) await offerer.send(`✅ Sua oferta na troca **#${t.id}** foi aceita: ${ch}`).catch(() => {});
+      return interaction.update({ content: `✅ Oferta aceita. Ticket privado criado: ${ch}`, embeds: [], components: [] });
+    } catch (e) {
+      await db.query('ROLLBACK');
+      throw e;
+    } finally {
+      db.release();
+    }
+  }
+
+  if (id.startsWith('trade_no_admin:')) {
+    const tradeId = Number(id.split(':')[1]);
+    const ticket = (await pool.query(`SELECT * FROM trade_tickets WHERE trade_id=$1`, [tradeId])).rows[0];
+    if (!ticket || ![ticket.advertiser_id, ticket.offerer_id].includes(interaction.user.id)) return interaction.reply({ content: '❌ Você não participa desta troca.', ephemeral: true });
+    await pool.query(`UPDATE trade_tickets SET risk_accepted=TRUE WHERE trade_id=$1`, [tradeId]);
+    return interaction.reply({ content: '⚠️ Vocês escolheram continuar **sem ADM**. A negociação ocorre por conta e risco dos participantes; a Berovenda\'s não se responsabiliza por perdas decorrentes da troca direta.' });
+  }
+
+  if (id.startsWith('trade_call_admin:')) {
+    const tradeId = Number(id.split(':')[1]);
+    const ticket = (await pool.query(`SELECT * FROM trade_tickets WHERE trade_id=$1`, [tradeId])).rows[0];
+    if (!ticket || ![ticket.advertiser_id, ticket.offerer_id].includes(interaction.user.id)) return interaction.reply({ content: '❌ Você não participa desta troca.', ephemeral: true });
+    const adminRole = findRole(interaction.guild, CONFIG.roles.admin);
+    const online = adminRole ? adminRole.members.filter((m) => !m.user.bot && m.presence?.status && m.presence.status !== 'offline') : null;
+    const candidates = online ? [...online.values()] : [];
+    if (!candidates.length) return interaction.reply({ content: '🔴 Nenhum ADM está online agora. Tente novamente depois.', ephemeral: true });
+    if (candidates.length === 1) {
+      const ch = await assignTradeMediator(interaction.guild, tradeId, candidates[0].id);
+      return interaction.reply({ content: `✅ ${candidates[0]} foi definido automaticamente como mediador.`, ephemeral: true });
+    }
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId(`trade_mediator_select:${tradeId}`)
+      .setPlaceholder('Escolha um ADM online')
+      .addOptions(candidates.slice(0, 25).map((m) => ({ label: m.displayName.slice(0, 100), value: m.id })));
+    return interaction.reply({ content: '🛡️ Escolha um ADM online para mediar:', components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
+  }
+
+  if (interaction.isStringSelectMenu() && id.startsWith('trade_mediator_select:')) {
+    const tradeId = Number(id.split(':')[1]);
+    const adminId = interaction.values[0];
+    const adminRole = findRole(interaction.guild, CONFIG.roles.admin);
+    const member = await interaction.guild.members.fetch(adminId).catch(() => null);
+    if (!member || !adminRole || !member.roles.cache.has(adminRole.id)) return interaction.update({ content: '❌ ADM inválido.', components: [] });
+    await assignTradeMediator(interaction.guild, tradeId, adminId);
+    return interaction.update({ content: `✅ ${member} foi escolhido como mediador.`, components: [] });
+  }
+
+  if (id.startsWith('trade_mediation_complete:')) {
+    const tradeId = Number(id.split(':')[1]);
+    const ticket = (await pool.query(`SELECT * FROM trade_tickets WHERE trade_id=$1`, [tradeId])).rows[0];
+    if (!ticket) return interaction.reply({ content: '❌ Mediação não encontrada.', ephemeral: true });
+    if (interaction.user.id !== ticket.mediator_user_id && !isOwner(interaction.member)) return interaction.reply({ content: '❌ Apenas o mediador ou DONO pode concluir.', ephemeral: true });
+    if (!ticket.mediator_user_id) return interaction.reply({ content: '❌ Nenhum mediador definido.', ephemeral: true });
+    await pool.query(
+      `INSERT INTO mediation_earnings(trade_id,guild_id,mediator_user_id,amount) VALUES($1,$2,$3,10)
+       ON CONFLICT(trade_id) DO NOTHING`,
+      [tradeId, interaction.guild.id, ticket.mediator_user_id],
+    );
+    await pool.query(`UPDATE trade_tickets SET mediation_paid=TRUE WHERE trade_id=$1`, [tradeId]);
+    return interaction.reply({ content: `✅ Mediação concluída. **R$ 10,00** registrados 100% para <@${ticket.mediator_user_id}>.` });
+  }
+
+  if (id.startsWith('trade_close:')) {
+    const tradeId = Number(id.split(':')[1]);
+    const ticket = (await pool.query(`SELECT * FROM trade_tickets WHERE trade_id=$1`, [tradeId])).rows[0];
+    if (!ticket) return interaction.reply({ content: '❌ Ticket não encontrado.', ephemeral: true });
+    const allowed = [ticket.advertiser_id, ticket.offerer_id, ticket.mediator_user_id].filter(Boolean);
+    if (!allowed.includes(interaction.user.id) && !isOwner(interaction.member)) return interaction.reply({ content: '❌ Você não pode fechar esta negociação.', ephemeral: true });
+    await pool.query(`UPDATE trade_tickets SET closed_at=NOW() WHERE trade_id=$1`, [tradeId]);
+    await pool.query(`UPDATE trades SET status='CLOSED',closed_at=NOW() WHERE id=$1`, [tradeId]);
+    await interaction.reply('🔒 Negociação será fechada em 3 segundos.');
+    return setTimeout(() => interaction.channel?.delete().catch(() => {}), 3000);
+  }
+}
+
+async function handleGameOrder(interaction) {
+  const id = interaction.customId || '';
+  if (id === 'game_order_open') {
+    const modal = new ModalBuilder().setCustomId('game_order_modal').setTitle('Encomendar jogo');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('game').setLabel('Qual jogo?').setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('platform').setLabel('Plataforma').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('Steam, Roblox, etc.')),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('budget').setLabel('Orçamento aproximado').setStyle(TextInputStyle.Short).setRequired(false)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('notes').setLabel('Observações').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(800)),
+    );
+    return interaction.showModal(modal);
+  }
+  if (interaction.isModalSubmit() && id === 'game_order_modal') {
+    const ticket = await createPrivateTicket(interaction.guild, interaction.user, 'support');
+    const game = interaction.fields.getTextInputValue('game').trim();
+    const platform = interaction.fields.getTextInputValue('platform').trim();
+    const budget = interaction.fields.getTextInputValue('budget').trim() || 'Não informado';
+    const notes = interaction.fields.getTextInputValue('notes').trim() || 'Sem observações';
+    await ticket.send({
+      content: `<@${interaction.user.id}>`,
+      embeds: [new EmbedBuilder().setColor(CONFIG.brand.color).setTitle('🎮 Encomenda de jogo').addFields(
+        { name: 'Jogo', value: game },
+        { name: 'Plataforma', value: platform, inline: true },
+        { name: 'Orçamento', value: budget, inline: true },
+        { name: 'Observações', value: notes },
+      )],
+      components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('ticket_close').setLabel('Fechar ticket').setStyle(ButtonStyle.Secondary))],
+    });
+    await addHistory('GAME_ORDER_OPEN', { userId: interaction.user.id, username: interaction.user.username, details: { game, platform, budget, ticketId: ticket.id } });
+    return interaction.reply({ content: `✅ Encomenda aberta: ${ticket}`, ephemeral: true });
+  }
+}
+
+
 client.once('ready', async () => {
   try {
     await pool.query('SELECT 1');
@@ -1385,7 +2441,9 @@ client.once('ready', async () => {
     console.log(`Berovenda's AutoSeller online como ${client.user.tag}`);
     for (const guild of client.guilds.cache.values()) {
       await resumeWaitlistTimers(guild).catch(console.error);
+      await syncGuildBoosters(guild).catch(console.error);
     }
+    setInterval(() => autoDrawGiveaways().catch(console.error), 60 * 1000);
     await checkInactiveMembers().catch(console.error);
     setInterval(() => checkInactiveMembers().catch(console.error), 60 * 60 * 1000);
   } catch (e) {
@@ -1486,9 +2544,35 @@ client.on('guildMemberAdd', async (member) => {
   } catch (e) { console.error('Boas-vindas:', e); }
 });
 
+
+client.on('guildMemberUpdate', async (oldMember, newMember) => {
+  if (newMember.user.bot) return;
+  const was = Boolean(oldMember.premiumSince);
+  const now = Boolean(newMember.premiumSince);
+  if (was !== now) await syncBoosterCoupon(newMember, now).catch(console.error);
+});
+
+client.on('messageCreate', async (message) => {
+  if (message.author.bot || !message.guild) return;
+  const draft = (await pool.query(`SELECT * FROM trade_drafts WHERE channel_id=$1 AND user_id=$2`, [message.channel.id, message.author.id])).rows[0];
+  if (!draft) return;
+  if (!message.attachments.size) return;
+  await publishTradeFromDraft(message, draft).catch(async (e) => {
+    console.error('Trade draft:', e);
+    await message.reply('❌ Ocorreu um erro ao processar a imagem da troca.').catch(() => {});
+  });
+});
+
 client.on('interactionCreate', async (interaction) => {
   try {
     const id = interaction.customId || '';
+
+    if (id === 'game_order_open' || id === 'game_order_modal') return handleGameOrder(interaction);
+    if (id === 'admin_steam' || id.startsWith('steam_admin')) return handleAdminSteam(interaction);
+    if (id === 'steam_browse' || id === 'steam_select' || id.startsWith('steam_buy:')) return handleSteamStore(interaction);
+    if (id === 'admin_revenue' || id === 'revenue_split' || id === 'revenue_split_modal') return handleAdminRevenue(interaction);
+    if (id === 'admin_giveaways' || id.startsWith('giveaway_')) return handleGiveaways(interaction);
+    if (id.startsWith('trade_')) return handleTrades(interaction);
 
     if (id.startsWith('verify_gender:')) {
       if (!interaction.guild || !interaction.member) return interaction.reply({ content: '❌ Use dentro do servidor.', ephemeral: true });
@@ -1568,6 +2652,15 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: '✅ Painéis atualizados.', ephemeral: true });
     }
 
+    if (id.startsWith('steam_retry_delivery:')) {
+      if (!isAdmin(interaction.member)) return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
+      const purchaseId = Number(id.split(':')[1]);
+      const p = (await pool.query(`SELECT * FROM purchases WHERE id=$1 AND purchase_type='STEAM' AND status='PAID'`, [purchaseId])).rows[0];
+      if (!p) return interaction.reply({ content: '❌ Pedido Steam não está aguardando entrega.', ephemeral: true });
+      const delivered = await deliverSteamPurchase(interaction.guild, p);
+      return interaction.reply({ content: delivered.success ? `✅ Entrega concluída. Cupom: **${delivered.coupon}**.` : `❌ Falha na entrega: ${delivered.reason}.`, ephemeral: true });
+    }
+
     if (id.startsWith('purchase_paid:')) return markPaid(interaction, Number(id.split(':')[1]));
     if (id.startsWith('purchase_complete:')) return completePurchase(interaction, Number(id.split(':')[1]));
     if (id.startsWith('purchase_cancel:')) return cancelPurchase(interaction, Number(id.split(':')[1]));
@@ -1611,6 +2704,24 @@ client.on('interactionCreate', async (interaction) => {
         components: [new ActionRowBuilder().addComponents(...rows.map((r) => new ButtonBuilder().setCustomId(`wait_leave:${r.product_id}`).setLabel(r.product_name).setStyle(ButtonStyle.Secondary)))],
         ephemeral: true,
       });
+    }
+
+
+    if (id === 'cart_roblox') {
+      const modal = new ModalBuilder().setCustomId('cart_roblox_modal').setTitle('Usuário do Roblox');
+      modal.addComponents(new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId('username').setLabel('Seu usuário do Roblox').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('Exemplo: MeuUsuario123').setMinLength(3).setMaxLength(20),
+      ));
+      return interaction.showModal(modal);
+    }
+
+    if (interaction.isModalSubmit() && id === 'cart_roblox_modal') {
+      const username = interaction.fields.getTextInputValue('username').trim();
+      if (!/^[A-Za-z0-9_]{3,20}$/.test(username)) return interaction.reply({ content: '❌ Usuário Roblox inválido. Use de 3 a 20 caracteres com letras, números ou `_`.', ephemeral: true });
+      const cart = await getCart(interaction.guild.id, interaction.user.id);
+      if (!cart) return interaction.reply({ content: '❌ Carrinho expirado. Inicie a compra novamente.', ephemeral: true });
+      await pool.query(`UPDATE carts SET roblox_username=$3,updated_at=NOW() WHERE guild_id=$1 AND user_id=$2`, [interaction.guild.id, interaction.user.id, username]);
+      return interaction.reply({ ...(await cartMessage(interaction.guild.id, interaction.user.id)), ephemeral: true });
     }
 
     if (interaction.isModalSubmit() && id === 'cart_coupon_modal') {
@@ -1674,6 +2785,9 @@ client.on('interactionCreate', async (interaction) => {
       if (!cart) return interaction.update({ content: '❌ Carrinho expirado. Inicie a compra novamente.', components: [] });
       await interaction.deferUpdate();
       const r = await createPurchase(interaction.user, interaction.guild, cart.product_id, Number(cart.quantity));
+      if (!r.success && r.reason === 'ROBLOX_REQUIRED') {
+        return interaction.editReply({ content: '⚠️ Informe seu **usuário do Roblox** antes de confirmar a compra.', components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('cart_roblox').setLabel('Informar usuário Roblox').setEmoji('🎮').setStyle(ButtonStyle.Danger))] });
+      }
       if (!r.success && r.reason === 'OUT') {
         return interaction.editReply({ content: '🔴 O produto acabou antes da confirmação.', components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`wait_join:${cart.product_id}`).setLabel('Entrar na lista de espera').setStyle(ButtonStyle.Danger))] });
       }
