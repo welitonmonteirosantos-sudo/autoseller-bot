@@ -1101,7 +1101,7 @@ async function publishStaticPanels(guild) {
         .setColor(CONFIG.brand.color)
         .setTitle('🔄 Trocas entre membros')
         .setDescription(
-          'Publique uma troca de conta/item com **foto obrigatória**. O anúncio fica ativo por **30 minutos**.\n\n' +
+          'Publique uma troca de conta/item com **foto obrigatória**. O anúncio fica ativo por **5 dias**.\n\n' +
           'Quem tiver interesse pode clicar em **Oferta** e enviar foto + descrição opcional. Se uma oferta for aceita, o bot abre um ticket privado visível somente pelos dois participantes, o **DONO** e, se solicitado, o mediador escolhido.'
         )
         .setImage('attachment://trocaaqui.png')],
@@ -2151,9 +2151,9 @@ async function publishTradeFromDraft(message, draft) {
 
   if (draft.stage === 'AD') {
     const active = await pool.query(`SELECT 1 FROM trades WHERE guild_id=$1 AND advertiser_id=$2 AND status='ACTIVE' AND expires_at > NOW() LIMIT 1`, [message.guild.id, message.author.id]);
-    if (active.rowCount) return message.reply('⚠️ Você já tem um anúncio ativo. Aguarde os 30 minutos ou finalize a negociação atual.');
+    if (active.rowCount) return message.reply('⚠️ Você já tem um anúncio ativo. Aguarde o anúncio expirar em 5 dias ou finalize a negociação atual.');
 
-    const expires = new Date(Date.now() + 30 * 60_000);
+    const expires = new Date(Date.now() + 5 * 24 * 60 * 60_000);
     const t = (await pool.query(
       `INSERT INTO trades(guild_id,advertiser_id,advertiser_name,offer_text,want_text,description,image_url,expires_at)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
@@ -2288,7 +2288,7 @@ async function handleTrades(interaction) {
   if (id === 'trade_create') {
     if (!interaction.guild) return interaction.reply({ content: '❌ Use dentro do servidor.', ephemeral: true });
     const active = await pool.query(`SELECT 1 FROM trades WHERE guild_id=$1 AND advertiser_id=$2 AND status='ACTIVE' AND expires_at > NOW() LIMIT 1`, [interaction.guild.id, interaction.user.id]);
-    if (active.rowCount) return interaction.reply({ content: '⚠️ Você já possui um anúncio ativo. Aguarde os 30 minutos.', ephemeral: true });
+    if (active.rowCount) return interaction.reply({ content: '⚠️ Você já possui um anúncio ativo. Aguarde ele expirar em 5 dias ou finalize a negociação.', ephemeral: true });
     const modal = new ModalBuilder().setCustomId('trade_create_modal').setTitle('Criar anúncio de troca');
     modal.addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('offer').setLabel('O que você oferece?').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200)),
