@@ -25,9 +25,13 @@ function stockStatus(product) {
   return `🟢 ${product.stock} disponíveis`;
 }
 
-function createPurchasePanel() {
-  const product100 = getProductById("rap_100");
-  const product1000 = getProductById("rap_1000");
+async function createPurchasePanel() {
+  const product100 = await getProductById("rap_100");
+  const product1000 = await getProductById("rap_1000");
+
+  if (!product100 || !product1000) {
+    throw new Error("Produtos principais não encontrados.");
+  }
 
   const embed = new EmbedBuilder()
     .setColor(config.brand.color)
@@ -97,9 +101,9 @@ async function publishPurchasePanel(guild) {
     };
   }
 
-  const message = await channel.send(
-    createPurchasePanel()
-  );
+  const panel = await createPurchasePanel();
+
+  const message = await channel.send(panel);
 
   return {
     success: true,
