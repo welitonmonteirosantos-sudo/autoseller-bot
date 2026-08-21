@@ -1,134 +1,268 @@
+const { pool } = require("./db");
+
 const MAX_WAITLIST = 10;
 
-const waitlists = new Map();
-
-function getList(productId) {
-  if (!waitlists.has(productId)) {
-    waitlists.set(productId, []);
-  }
-
-  return waitlists.get(productId);
-}
-
-function joinWaitlist(productId, user) {
-  const list = getList(productId);
-
-  const existing = list.find(
-    (entry) => entry.userId === user.id
-  );
-
-  if (existing) {
-    return {
-      success: false,
-      reason: "ALREADY_IN_WAITLIST",
-      position: list.indexOf(existing) + 1,
-    };
-  }
-
-  if (list.length >= MAX_WAITLIST) {
-    return {
-      success: false,
-      reason: "WAITLIST_FULL",
-    };
-  }
-
-  const entry = {
-    userId: user.id,
-    username: user.username,
-    joinedAt: new Date().toISOString(),
-    notifiedAt: null,
-  };
-
-  list.push(entry);
+function mapEntry(row) {
+  if (!row) return null;
 
   return {
-    success: true,
-    entry,
-    position: list.length,
-    total: list.length,
+    id: Number(row.id),
+    productId: row.product_id,
+    userId: row.user_id,
+    username: row.username,
+    joinedAt: row.joined_at,
+    notifiedAt: row.notified_at,
   };
 }
 
-function leaveWaitlist(productId, userId) {
-  const list = getList(productId);
+async function joinWaitlist(productId, user) {
+  const client = await pool.connect();
 
-  const index = list.findIndex(
-    (entry) => entry.userId === userId
+  try {
+    await client.query("BEGIN");
+
+    const existing = await client.query(
+      `
+        SELECT *
+        FROM waitlist
+        WHERE product_id = $1
+          AND user_id = $2
+        LIMIT 1
+      `,
+      [productId, user.id]
+    );
+
+    if (existing.rows.length > 0) {
+      const positionResult = await client.query(
+        `
+          SELECT COUNT(*)::int AS position
+          FROM waitlist
+          WHERE product_id = $1
+            AND joined_at <= $2
+        `,
+        [
+          productId,
+          existing.rows[0].joined_at,
+        ]
+      );
+
+      await client.query("ROLLBACK");
+
+      return {
+        success: false,
+        reason: "ALREADY_IN_WAITLIST",
+        position: positionResult.rows[0].position,
+      };
+    }
+
+    const countResult = await client.query(
+      `
+        SELECT COUNT(*)::int AS total
+        FROM waitlist
+        WHERE product_id = $1
+      `,
+      [productId]
+    );
+
+    const total = countResult.rows[0].total;
+
+    if (total >= MAX_WAITLIST) {
+      await client.query("ROLLBACK");
+
+      return {
+        success: false,
+        reason: "WAITLIST_FULL",
+      };
+    }
+
+    const insertResult = await client.query(
+      `
+        INSERT INTO waitlist (
+          product_id,
+          user_id,
+          username
+        )
+        VALUES ($1, $2, $3)
+        RETURNING *
+      `,
+      [
+        productId,
+        user.id,
+        user.username,
+      ]
+    );
+
+    await client.query("COMMIT");
+
+    const entry = mapEntry(insertResult.rows[0]);
+
+    return {
+      success: true,
+      entry,
+      position: total + 1,
+      total: total + 1,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function leaveWaitlist(productId, userId) {
+  const result = await pool.query(
+    `
+      DELETE FROM waitlist
+      WHERE product_id = $1
+        AND user_id = $2
+      RETURNING *
+    `,
+    [productId, userId]
   );
 
-  if (index === -1) {
+  if (result.rows.length === 0) {
     return {
       success: false,
       reason: "NOT_IN_WAITLIST",
     };
   }
 
-  const [removed] = list.splice(index, 1);
+  const countResult = await pool.query(
+    `
+      SELECT COUNT(*)::int AS total
+      FROM waitlist
+      WHERE product_id = $1
+    `,
+    [productId]
+  );
 
   return {
     success: true,
-    removed,
-    total: list.length,
+    removed: mapEntry(result.rows[0]),
+    total: countResult.rows[0].total,
   };
 }
 
-function removeAfterPurchase(productId, userId) {
+async function removeAfterPurchase(productId, userId) {
   return leaveWaitlist(productId, userId);
 }
 
-function isInWaitlist(productId, userId) {
-  return getList(productId).some(
-    (entry) => entry.userId === userId
-  );
-}
-
-function getPosition(productId, userId) {
-  const list = getList(productId);
-
-  const index = list.findIndex(
-    (entry) => entry.userId === userId
-  );
-
-  return index === -1 ? null : index + 1;
-}
-
-function getWaitlist(productId) {
-  return [...getList(productId)];
-}
-
-function getWaitlistCount(productId) {
-  return getList(productId).length;
-}
-
-function getNext(productId) {
-  const list = getList(productId);
-
-  return list.length > 0 ? list[0] : null;
-}
-
-function markNotified(productId, userId) {
-  const list = getList(productId);
-
-  const entry = list.find(
-    (item) => item.userId === userId
+async function isInWaitlist(productId, userId) {
+  const result = await pool.query(
+    `
+      SELECT 1
+      FROM waitlist
+      WHERE product_id = $1
+        AND user_id = $2
+      LIMIT 1
+    `,
+    [productId, userId]
   );
 
-  if (!entry) {
+  return result.rows.length > 0;
+}
+
+async function getPosition(productId, userId) {
+  const target = await pool.query(
+    `
+      SELECT joined_at
+      FROM waitlist
+      WHERE product_id = $1
+        AND user_id = $2
+      LIMIT 1
+    `,
+    [productId, userId]
+  );
+
+  if (target.rows.length === 0) {
     return null;
   }
 
-  entry.notifiedAt = new Date().toISOString();
+  const result = await pool.query(
+    `
+      SELECT COUNT(*)::int AS position
+      FROM waitlist
+      WHERE product_id = $1
+        AND joined_at <= $2
+    `,
+    [
+      productId,
+      target.rows[0].joined_at,
+    ]
+  );
 
-  return entry;
+  return result.rows[0].position;
 }
 
-function clearWaitlist(productId) {
-  const list = getList(productId);
-  const total = list.length;
+async function getWaitlist(productId) {
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM waitlist
+      WHERE product_id = $1
+      ORDER BY joined_at ASC, id ASC
+    `,
+    [productId]
+  );
 
-  list.splice(0, list.length);
+  return result.rows.map(mapEntry);
+}
 
-  return total;
+async function getWaitlistCount(productId) {
+  const result = await pool.query(
+    `
+      SELECT COUNT(*)::int AS total
+      FROM waitlist
+      WHERE product_id = $1
+    `,
+    [productId]
+  );
+
+  return result.rows[0].total;
+}
+
+async function getNext(productId) {
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM waitlist
+      WHERE product_id = $1
+      ORDER BY joined_at ASC, id ASC
+      LIMIT 1
+    `,
+    [productId]
+  );
+
+  return mapEntry(result.rows[0]);
+}
+
+async function markNotified(productId, userId) {
+  const result = await pool.query(
+    `
+      UPDATE waitlist
+      SET notified_at = NOW()
+      WHERE product_id = $1
+        AND user_id = $2
+      RETURNING *
+    `,
+    [productId, userId]
+  );
+
+  return mapEntry(result.rows[0]);
+}
+
+async function clearWaitlist(productId) {
+  const result = await pool.query(
+    `
+      DELETE FROM waitlist
+      WHERE product_id = $1
+      RETURNING id
+    `,
+    [productId]
+  );
+
+  return result.rowCount;
 }
 
 module.exports = {
