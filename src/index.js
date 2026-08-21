@@ -32,6 +32,10 @@ const {
   isAdmin,
 } = require("./utils/permissions");
 
+const {
+  testConnection,
+} = require("./database/db");
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -44,12 +48,20 @@ const client = new Client({
 // BOT ONLINE
 // ==============================
 
-client.once("ready", () => {
+client.once("ready", async () => {
   initializeProducts();
 
   console.log(
     `Berovenda's AutoSeller online como ${client.user.tag}`
   );
+
+  const databaseConnected = await testConnection();
+
+  if (databaseConnected) {
+    console.log("Banco de dados PostgreSQL funcionando.");
+  } else {
+    console.log("Falha na conexão com o PostgreSQL.");
+  }
 });
 
 // ==============================
