@@ -71,6 +71,7 @@ const CONFIG = {
     adminManual: '📘・manual-dos-adms',
     giveaways: '🎉・sorteios',
     trades: '🔄・trocas',
+    tradesChat: '💬・trades-chat',
   },
 };
 
@@ -926,7 +927,24 @@ async function ensureServerStructure(guild) {
   await ensureTextChannel(guild, CONFIG.channels.general, publicCat);
   await ensureTextChannel(guild, CONFIG.channels.steam, publicCat);
   await ensureTextChannel(guild, CONFIG.channels.giveaways, publicCat);
-  await ensureTextChannel(guild, CONFIG.channels.trades, publicCat);
+  const tradeAdsCh = await ensureTextChannel(guild, CONFIG.channels.trades, publicCat);
+  const tradeChatCh = await ensureTextChannel(guild, CONFIG.channels.tradesChat, publicCat);
+
+  // 🔄・trocas = somente anúncios do bot.
+  await tradeAdsCh.permissionOverwrites.edit(guild.roles.everyone, {
+    SendMessages: false,
+    AttachFiles: false,
+    EmbedLinks: false,
+    CreatePublicThreads: false,
+    CreatePrivateThreads: false,
+    SendMessagesInThreads: false,
+  }).catch(() => {});
+
+  // 💬・trades-chat = somente conversa em texto.
+  await tradeChatCh.permissionOverwrites.edit(guild.roles.everyone, {
+    AttachFiles: false,
+    EmbedLinks: false,
+  }).catch(() => {});
 
   const feedbackOverwrites = [
     { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
