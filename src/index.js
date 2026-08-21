@@ -53,34 +53,39 @@ const client = new Client({
 // ==============================
 
 client.once("ready", async () => {
-  initializeProducts();
-
-  console.log(
-    `Berovenda's AutoSeller online como ${client.user.tag}`
-  );
-
-  const databaseConnected = await testConnection();
-
-  if (!databaseConnected) {
-    console.error(
-      "Falha na conexão com o PostgreSQL."
-    );
-    return;
-  }
-
-  console.log(
-    "Banco de dados PostgreSQL funcionando."
-  );
-
   try {
+    const databaseConnected = await testConnection();
+
+    if (!databaseConnected) {
+      console.error(
+        "Falha na conexão com o PostgreSQL."
+      );
+
+      return;
+    }
+
+    console.log(
+      "Banco de dados PostgreSQL funcionando."
+    );
+
     await setupDatabase();
 
     console.log(
       "Banco de dados preparado com sucesso."
     );
+
+    await initializeProducts();
+
+    console.log(
+      "Produtos carregados no PostgreSQL."
+    );
+
+    console.log(
+      `Berovenda's AutoSeller online como ${client.user.tag}`
+    );
   } catch (error) {
     console.error(
-      "Erro ao preparar banco de dados:",
+      "Erro durante a inicialização do bot:",
       error
     );
   }
@@ -115,29 +120,40 @@ client.on("messageCreate", async (message) => {
       );
     }
 
-    const result = await publishPurchasePanel(
-      message.guild
-    );
+    try {
+      const result = await publishPurchasePanel(
+        message.guild
+      );
 
-    if (!result.success) {
+      if (!result.success) {
+        return message.reply(
+          "❌ Não encontrei o canal de compras."
+        );
+      }
+
+      await addAdminLog({
+        adminId: message.author.id,
+        adminName: message.author.username,
+        action: "PUBLISH_PURCHASE_PANEL",
+        details: {
+          channelId: result.channel.id,
+          messageId: result.message.id,
+        },
+      });
+
       return message.reply(
-        "❌ Não encontrei o canal de compras."
+        `✅ Painel de compras publicado em ${result.channel}.`
+      );
+    } catch (error) {
+      console.error(
+        "Erro ao publicar painel de compras:",
+        error
+      );
+
+      return message.reply(
+        "❌ Não foi possível publicar o painel de compras."
       );
     }
-
-    addAdminLog({
-      adminId: message.author.id,
-      adminName: message.author.username,
-      action: "PUBLISH_PURCHASE_PANEL",
-      details: {
-        channelId: result.channel.id,
-        messageId: result.message.id,
-      },
-    });
-
-    return message.reply(
-      `✅ Painel de compras publicado em ${result.channel}.`
-    );
   }
 
   // ------------------------------
@@ -151,29 +167,40 @@ client.on("messageCreate", async (message) => {
       );
     }
 
-    const result = await publishAdminPanel(
-      message.guild
-    );
+    try {
+      const result = await publishAdminPanel(
+        message.guild
+      );
 
-    if (!result.success) {
+      if (!result.success) {
+        return message.reply(
+          "❌ Não encontrei o canal administrativo `⚙️・painel`."
+        );
+      }
+
+      await addAdminLog({
+        adminId: message.author.id,
+        adminName: message.author.username,
+        action: "PUBLISH_ADMIN_PANEL",
+        details: {
+          channelId: result.channel.id,
+          messageId: result.message.id,
+        },
+      });
+
       return message.reply(
-        "❌ Não encontrei o canal administrativo `⚙️・painel`."
+        `✅ Painel administrativo publicado em ${result.channel}.`
+      );
+    } catch (error) {
+      console.error(
+        "Erro ao publicar painel administrativo:",
+        error
+      );
+
+      return message.reply(
+        "❌ Não foi possível publicar o painel administrativo."
       );
     }
-
-    addAdminLog({
-      adminId: message.author.id,
-      adminName: message.author.username,
-      action: "PUBLISH_ADMIN_PANEL",
-      details: {
-        channelId: result.channel.id,
-        messageId: result.message.id,
-      },
-    });
-
-    return message.reply(
-      `✅ Painel administrativo publicado em ${result.channel}.`
-    );
   }
 
   // ------------------------------
@@ -206,26 +233,37 @@ client.on("messageCreate", async (message) => {
       );
     }
 
-    const removed = removeOldest(amount);
-    const remaining = getHistoryCount();
+    try {
+      const removed = await removeOldest(amount);
+      const remaining = await getHistoryCount();
 
-    addAdminLog({
-      adminId: message.author.id,
-      adminName: message.author.username,
-      action: "CLEAR_HISTORY",
-      details: {
-        requested: amount,
-        removed,
-        remaining,
-      },
-    });
+      await addAdminLog({
+        adminId: message.author.id,
+        adminName: message.author.username,
+        action: "CLEAR_HISTORY",
+        details: {
+          requested: amount,
+          removed,
+          remaining,
+        },
+      });
 
-    return message.reply(
-      `🗑️ **Histórico limpo**\n\n` +
-      `Solicitado: **${amount}**\n` +
-      `Removido: **${removed}**\n` +
-      `Restante: **${remaining}**`
-    );
+      return message.reply(
+        `🗑️ **Histórico limpo**\n\n` +
+        `Solicitado: **${amount}**\n` +
+        `Removido: **${removed}**\n` +
+        `Restante: **${remaining}**`
+      );
+    } catch (error) {
+      console.error(
+        "Erro ao limpar histórico:",
+        error
+      );
+
+      return message.reply(
+        "❌ Não foi possível limpar o histórico."
+      );
+    }
   }
 });
 
