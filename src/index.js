@@ -36,6 +36,10 @@ const {
   testConnection,
 } = require("./database/db");
 
+const {
+  setupDatabase,
+} = require("./database/setup");
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -57,10 +61,28 @@ client.once("ready", async () => {
 
   const databaseConnected = await testConnection();
 
-  if (databaseConnected) {
-    console.log("Banco de dados PostgreSQL funcionando.");
-  } else {
-    console.log("Falha na conexão com o PostgreSQL.");
+  if (!databaseConnected) {
+    console.error(
+      "Falha na conexão com o PostgreSQL."
+    );
+    return;
+  }
+
+  console.log(
+    "Banco de dados PostgreSQL funcionando."
+  );
+
+  try {
+    await setupDatabase();
+
+    console.log(
+      "Banco de dados preparado com sucesso."
+    );
+  } catch (error) {
+    console.error(
+      "Erro ao preparar banco de dados:",
+      error
+    );
   }
 });
 
