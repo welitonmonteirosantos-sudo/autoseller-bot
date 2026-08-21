@@ -16,6 +16,10 @@ const {
 } = require("./commands/panel");
 
 const {
+  publishAdminPanel,
+} = require("./commands/adminPanel");
+
+const {
   removeOldest,
   getHistoryCount,
 } = require("./database/history");
@@ -58,12 +62,18 @@ client.on("messageCreate", async (message) => {
 
   const content = message.content.trim();
 
+  // ------------------------------
   // +ping
+  // ------------------------------
+
   if (content === "+ping") {
     return message.reply("🏓 Pong!");
   }
 
+  // ------------------------------
   // +painel
+  // ------------------------------
+
   if (content === "+painel") {
     if (!isAdmin(message.member)) {
       return message.reply(
@@ -84,7 +94,7 @@ client.on("messageCreate", async (message) => {
     addAdminLog({
       adminId: message.author.id,
       adminName: message.author.username,
-      action: "PUBLISH_PANEL",
+      action: "PUBLISH_PURCHASE_PANEL",
       details: {
         channelId: result.channel.id,
         messageId: result.message.id,
@@ -92,11 +102,50 @@ client.on("messageCreate", async (message) => {
     });
 
     return message.reply(
-      `✅ Painel publicado em ${result.channel}.`
+      `✅ Painel de compras publicado em ${result.channel}.`
     );
   }
 
+  // ------------------------------
+  // +admin
+  // ------------------------------
+
+  if (content === "+admin") {
+    if (!isAdmin(message.member)) {
+      return message.reply(
+        "❌ Você não tem permissão para usar este comando."
+      );
+    }
+
+    const result = await publishAdminPanel(
+      message.guild
+    );
+
+    if (!result.success) {
+      return message.reply(
+        "❌ Não encontrei o canal administrativo `⚙️・painel`."
+      );
+    }
+
+    addAdminLog({
+      adminId: message.author.id,
+      adminName: message.author.username,
+      action: "PUBLISH_ADMIN_PANEL",
+      details: {
+        channelId: result.channel.id,
+        messageId: result.message.id,
+      },
+    });
+
+    return message.reply(
+      `✅ Painel administrativo publicado em ${result.channel}.`
+    );
+  }
+
+  // ------------------------------
   // +hs quantidade
+  // ------------------------------
+
   if (content.startsWith("+hs")) {
     if (!isAdmin(message.member)) {
       return message.reply(
@@ -126,7 +175,6 @@ client.on("messageCreate", async (message) => {
     const removed = removeOldest(amount);
     const remaining = getHistoryCount();
 
-    // Log administrativo separado e protegido.
     addAdminLog({
       adminId: message.author.id,
       adminName: message.author.username,
