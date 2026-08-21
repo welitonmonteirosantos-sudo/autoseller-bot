@@ -43,9 +43,9 @@ async function handleInteraction(interaction) {
   // ==============================
 
   if (customId === "buy_open") {
-    return interaction.reply(
-      createProductSelectionMessage()
-    );
+    const message = await createProductSelectionMessage();
+
+    return interaction.reply(message);
   }
 
   // ==============================
@@ -55,7 +55,7 @@ async function handleInteraction(interaction) {
   if (customId.startsWith("buy_product:")) {
     const [, productId] = customId.split(":");
 
-    const result = openProductQuantity(productId);
+    const result = await openProductQuantity(productId);
 
     if (!result.success) {
       if (result.reason === "OUT_OF_STOCK") {
@@ -63,6 +63,14 @@ async function handleInteraction(interaction) {
           content:
             `🔴 **${result.product.name} está sem estoque.**\n\n` +
             "A lista de espera será conectada a esse fluxo.",
+          components: [],
+        });
+      }
+
+      if (result.reason === "PRODUCT_DISABLED") {
+        return interaction.update({
+          content:
+            `⛔ **${result.product.name} está indisponível no momento.**`,
           components: [],
         });
       }
@@ -90,7 +98,7 @@ async function handleInteraction(interaction) {
       "increase"
     );
 
-    const message = createQuantityMessage(
+    const message = await createQuantityMessage(
       productId,
       newQuantity
     );
@@ -118,7 +126,7 @@ async function handleInteraction(interaction) {
       "decrease"
     );
 
-    const message = createQuantityMessage(
+    const message = await createQuantityMessage(
       productId,
       newQuantity
     );
@@ -163,6 +171,14 @@ async function handleInteraction(interaction) {
         return interaction.editReply({
           content:
             "🔴 **O produto acabou antes da confirmação.**",
+          components: [],
+        });
+      }
+
+      if (result.reason === "PRODUCT_DISABLED") {
+        return interaction.editReply({
+          content:
+            "⛔ **Este produto está indisponível no momento.**",
           components: [],
         });
       }
