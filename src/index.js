@@ -13,6 +13,7 @@ const {
   PermissionFlagsBits,
   StringSelectMenuBuilder,
 } = require('discord.js');
+const { joinVoiceChannel, getVoiceConnection } = require('@discordjs/voice');
 const { Pool } = require('pg');
 const crypto = require('crypto');
 
@@ -72,6 +73,7 @@ const CONFIG = {
     giveaways: '🎉・sorteios',
     trades: '🔄・trocas',
     tradesChat: '💬・trades-chat',
+    botVoice: '🔊・bot-online',
   },
 };
 
@@ -101,6 +103,7 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildPresences,
+    GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
@@ -798,6 +801,66 @@ async function ensureTextChannel(guild, name, parent, overwrites = undefined) {
     else if (parent) await c.lockPermissions().catch(() => {});
   }
   return c;
+}
+
+
+async function ensureBotVoiceOnline(guild) {
+  const publicCat = await ensureCategory(guild, CONFIG.categories.public);
+
+  let channel = guild.channels.cache.find(
+    (c) => c.type === ChannelType.GuildVoice && c.name === CONFIG.channels.botVoice
+  );
+
+  const me = guild.members.me || await guild.members.fetchMe();
+
+  const overwrites = [
+    {
+      id: guild.roles.everyone.id,
+      allow: [PermissionFlagsBits.ViewChannel],
+      deny: [PermissionFlagsBits.Connect],
+    },
+    {
+      id: me.id,
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.Connect,
+        PermissionFlagsBits.Speak,
+      ],
+    },
+  ];
+
+  if (!channel) {
+    channel = await guild.channels.create({
+      name: CONFIG.channels.botVoice,
+      type: ChannelType.GuildVoice,
+      parent: publicCat.id,
+      permissionOverwrites: overwrites,
+      reason: "Canal de status do Berovenda's AutoSeller",
+    });
+  } else {
+    if (channel.parentId !== publicCat.id) {
+      await channel.setParent(publicCat.id, { lockPermissions: false }).catch(() => {});
+    }
+
+    await channel.permissionOverwrites.set(overwrites).catch(() => {});
+  }
+
+  const current = getVoiceConnection(guild.id);
+
+  if (current && current.joinConfig.channelId !== channel.id) {
+    current.destroy();
+  }
+
+  joinVoiceChannel({
+    channelId: channel.id,
+    guildId: guild.id,
+    adapterCreator: guild.voiceAdapterCreator,
+    selfDeaf: true,
+    selfMute: true,
+  });
+
+  console.log(`Bot conectado ao canal de voz: ${channel.name}`);
+  return channel;
 }
 
 async function ensureRole(guild, name, color = 0x2b2d31) {
@@ -2494,6 +2557,7 @@ client.once('ready', async () => {
     for (const guild of client.guilds.cache.values()) {
       await resumeWaitlistTimers(guild).catch(console.error);
       await syncGuildBoosters(guild).catch(console.error);
+      await ensureBotVoiceOnline(guild).catch(console.error);
     }
     setInterval(() => autoDrawGiveaways().catch(console.error), 60 * 1000);
     await checkInactiveMembers().catch(console.error);
