@@ -191,13 +191,36 @@ async function setupDatabase() {
     );
   `);
 
+  // Migrações para bancos criados por versões anteriores do AutoSeller.
+  // CREATE TABLE IF NOT EXISTS não adiciona colunas novas em tabelas já existentes,
+  // então mantemos todas as evoluções de esquema aqui com ADD COLUMN IF NOT EXISTS.
+
+  await pool.query(`ALTER TABLE waitlist ADD COLUMN IF NOT EXISTS notified_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE waitlist ADD COLUMN IF NOT EXISTS opportunity_expires_at TIMESTAMPTZ`);
+
   await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS guild_id TEXT`);
   await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS subtotal NUMERIC(10,2)`);
   await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS discount NUMERIC(10,2) NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS coupon_code TEXT`);
+  await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS ticket_id TEXT`);
+  await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'PENDING'`);
   await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ`);
+
+  await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS product_id TEXT`);
+  await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS max_uses INTEGER`);
+  await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS max_uses_per_user INTEGER NOT NULL DEFAULT 1`);
+  await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS used_count INTEGER NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE`);
   await pool.query(`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS created_by TEXT`);
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_waitlist_product_joined ON waitlist(product_id, joined_at, id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_purchases_user_created ON purchases(user_id, created_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_purchases_status ON purchases(status)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_history_created ON history(created_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_logs_created ON admin_logs(created_at DESC)`);
 
   for (const p of Object.values(CONFIG.products)) {
     await pool.query(
