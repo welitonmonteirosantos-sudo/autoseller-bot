@@ -1980,11 +1980,19 @@ async function handleAdminSteam(interaction) {
   if (!isAdmin(interaction.member)) return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
   const id = interaction.customId || '';
   if (id === 'admin_steam') {
-    const available = Number((await pool.query(`SELECT COUNT(*)::int n FROM steam_accounts WHERE guild_id=$1 AND status='AVAILABLE'`, [interaction.guild.id])).rows[0].n);
+    const available = Number((await pool.query(
+      `SELECT COALESCE(SUM(stock),0)::int n
+       FROM steam_accounts
+       WHERE guild_id=$1 AND status IN ('AVAILABLE','OUT_OF_STOCK')`,
+      [interaction.guild.id]
+    )).rows[0].n);
+
     return interaction.reply({
-      content: `🎮 **Estoque Steam**\nContas disponíveis: **${available}**`,
+      content: `🎮 **Estoque Steam**\nUnidades disponíveis: **${available}**`,
       components: [new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('steam_admin_add').setLabel('Adicionar conta').setEmoji('➕').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('steam_admin_add').setLabel('Adicionar produto').setEmoji('➕').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('steam_admin_stock').setLabel('Alterar estoque').setEmoji('📦').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('steam_admin_delete').setLabel('Excluir produto').setEmoji('🗑️').setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId('steam_admin_list').setLabel('Ver estoque').setStyle(ButtonStyle.Secondary),
       )],
       ephemeral: true,
@@ -1997,7 +2005,7 @@ async function handleAdminSteam(interaction) {
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('price').setLabel('Preço').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('19,90')),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('username').setLabel('Usuário Steam').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('password').setLabel('Senha Steam').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('description').setLabel('Descrição (máx. 50 palavras)').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(500)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('stock').setLabel('Quantidade / estoque').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('Exemplo: 20')),
     );
     return interaction.showModal(modal);
   }
@@ -2006,14 +2014,15 @@ async function handleAdminSteam(interaction) {
     const price = Number(interaction.fields.getTextInputValue('price').replace(',', '.'));
     const username = interaction.fields.getTextInputValue('username').trim();
     const password = interaction.fields.getTextInputValue('password');
-    const description = interaction.fields.getTextInputValue('description').trim();
-    if (!game || !Number.isFinite(price) || price <= 0 || !username || !password) return interaction.reply({ content: '❌ Dados inválidos.', ephemeral: true });
-    if (!max50Words(description)) return interaction.reply({ content: '❌ A descrição deve ter no máximo **50 palavras**.', ephemeral: true });
+    const stock = Number(interaction.fields.getTextInputValue('stock'));
+    if (!game || !Number.isFinite(price) || price <= 0 || !username || !password || !Number.isInteger(stock) || stock <= 0) {
+      return interaction.reply({ content: '❌ Dados inválidos. O estoque deve ser um número inteiro maior que 0.', ephemeral: true });
+    }
     const enc = encryptSteamPassword(password);
     const r = await pool.query(
-      `INSERT INTO steam_accounts(guild_id,game_title,price,username,password_encrypted,description,added_by)
-       VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-      [interaction.guild.id, game, price, username, enc, description || null, interaction.user.id],
+      `INSERT INTO steam_accounts(guild_id,game_title,price,username,password_encrypted,description,stock,status,added_by)
+       VALUES($1,$2,$3,$4,$5,NULL,$6,'AVAILABLE',$7) RETURNING id`,
+      [interaction.guild.id, game, price, username, enc, stock, interaction.user.id],
     );
     await adminLog(interaction.guild, interaction.user, 'ADD_STEAM_ACCOUNT', { details: { steamAccountId: Number(r.rows[0].id), game, price } });
     await publishStaticPanels(interaction.guild);
@@ -2143,6 +2152,77 @@ async function handleAdminSteam(interaction) {
 ` +
         `📦 **${before.stock} → ${stock}**`,
       ephemeral: true,
+    });
+  }
+
+  if (id === 'steam_admin_delete') {
+    const rows = (await pool.query(
+      `SELECT id,game_title,price,stock
+       FROM steam_accounts
+       WHERE guild_id=$1
+       ORDER BY created_at DESC
+       LIMIT 25`,
+      [interaction.guild.id]
+    )).rows;
+
+    if (!rows.length) {
+      return interaction.reply({
+        content: '❌ Nenhum produto Steam cadastrado.',
+        ephemeral: true,
+      });
+    }
+
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId('steam_admin_delete_select')
+      .setPlaceholder('Escolha o produto para excluir')
+      .addOptions(rows.map((x) => ({
+        label: `${x.game_title}`.slice(0, 100),
+        description: `${money(x.price)} • Estoque ${x.stock}`.slice(0, 100),
+        value: String(x.id),
+      })));
+
+    return interaction.reply({
+      content: '🗑️ Escolha o produto que deseja excluir:',
+      components: [new ActionRowBuilder().addComponents(menu)],
+      ephemeral: true,
+    });
+  }
+
+  if (interaction.isStringSelectMenu() && id === 'steam_admin_delete_select') {
+    const accountId = Number(interaction.values[0]);
+
+    const removed = await pool.query(
+      `DELETE FROM steam_accounts
+       WHERE id=$1 AND guild_id=$2
+       RETURNING id,game_title,stock`,
+      [accountId, interaction.guild.id]
+    );
+
+    if (!removed.rowCount) {
+      return interaction.update({
+        content: '❌ Produto não encontrado.',
+        components: [],
+      });
+    }
+
+    const product = removed.rows[0];
+
+    await adminLog(
+      interaction.guild,
+      interaction.user,
+      'DELETE_STEAM_PRODUCT',
+      {
+        details: {
+          steamAccountId: Number(product.id),
+          game: product.game_title,
+          stock: Number(product.stock),
+        },
+      },
+    );
+
+    return interaction.update({
+      content: `🗑️ **${product.game_title}** foi excluído do estoque.`,
+      components: [],
     });
   }
 
